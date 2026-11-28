@@ -28,6 +28,7 @@ describe("resolveAppPaths", () => {
     expect(paths.logs).toBe(join("C:", "user-data", "logs"));
     expect(paths.blobCache).toBe(join("C:", "user-data", "blob-cache"));
     expect(paths.editorBackups).toBe(join("C:", "user-data", "editor-backups"));
+    expect(paths.attachments).toBe(join("C:", "user-data", "attachments"));
     expect(paths.profileDir).toBe(join("C:", "Users", "tester", ".pi", "agent"));
   });
 

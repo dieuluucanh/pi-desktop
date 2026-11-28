@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -21,6 +22,15 @@ import {
 import { resolveCheckpointExtension } from "./checkpoint-extension";
 import { resolveWorkflowBuiltin, type WorkflowBuiltinResolution } from "./workflow-builtin";
 import { createControlCore } from "./control-core";
+import { createAttachmentTransferStore } from "./attachment-transfer";
+import { createAttachmentImagePreparationStore } from "./attachment-image-preparation";
+import { prepareRasterImage } from "../attachments/prepare-image";
+import { createSdkImageEncoder } from "./sdk/attachment-image";
+import { dispatchSdkAttachments } from "./sdk/attachments";
+import {
+  readAttachmentSubmissionAssociations,
+  readAttachmentSubmissionHistory,
+} from "./sdk/attachment-submission";
 import { createExtensionRendererRegistry } from "./extension-renderers";
 import { createFooterFacts } from "./footer-facts";
 import { createExtensionUiBridge, createExtensionUiPort } from "./extension-ui";
@@ -220,6 +230,47 @@ function createCore(options: {
     ...(options.workflowBuiltin ? { workflowBuiltin: options.workflowBuiltin } : {}),
     ...(options.bindSession ? { bindSession: options.bindSession as never } : {}),
     emit: options.emit,
+    listAttachmentSubmissions: (session) => readAttachmentSubmissionAssociations(session as never),
+    listAttachmentSubmissionHistory: (session) => readAttachmentSubmissionHistory(session as never),
+    dispatchAttachmentPrompt: (input) =>
+      dispatchSdkAttachments({
+        session: input.session as never,
+        turnId: input.turnId,
+        attemptId: input.attemptId,
+        planId: input.planId,
+        sourceTextSha256: input.sourceTextSha256,
+        scope: input.scope,
+        assets: input.assets,
+        expectedModel: input.expectedModel,
+        text: input.text,
+        images: input.images,
+        revalidate: input.revalidate,
+        isCurrent: input.isCurrent,
+        ...(input.onLateFailure ? { onLateFailure: input.onLateFailure } : {}),
+      }),
+    createAttachmentTransferStore: (current) =>
+      createAttachmentTransferStore({
+        now: Date.now,
+        current,
+        sha256: (bytes) => createHash("sha256").update(bytes).digest("hex"),
+        schedule: (delay, callback) => {
+          const timer = setTimeout(callback, delay);
+          return () => clearTimeout(timer);
+        },
+      }),
+    // Public SDK image preparation runs only in the host: main stages an
+    // owner-checked original, the host validates and resizes it, and main pulls
+    // the bytes back and persists its own immutable representation.
+    createAttachmentImagePreparation: () =>
+      createAttachmentImagePreparationStore({
+        now: Date.now,
+        sha256: (bytes) => createHash("sha256").update(bytes).digest("hex"),
+        schedule: (delay, callback) => {
+          const timer = setTimeout(callback, delay);
+          return () => clearTimeout(timer);
+        },
+        encode: (input) => prepareRasterImage(input.bytes, createSdkImageEncoder(), input.limits),
+      }),
     trustStore,
     contributionBus,
     createContributionBridge: (host) =>
@@ -676,6 +727,13 @@ export function runService(
             path: workflowBuiltin.path,
             disabledBy: workflowBuiltin.disabledBy,
           },
+          // Advertise only what this core actually wired; a control host or a
+          // build missing a required port reports null.
+          attachmentDeliveryVersion:
+            "attachmentDeliverySupport" in core &&
+            typeof core.attachmentDeliverySupport === "function"
+              ? core.attachmentDeliverySupport()
+              : null,
         },
       },
       onShutdown: () => {

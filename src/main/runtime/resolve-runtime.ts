@@ -66,6 +66,8 @@ export interface RuntimeResolution {
   piCliPath: string | null;
   /** The `out/host/terminal.mjs` bundle the PTY supervisor executes. */
   terminalHostPath: string;
+  /** The `out/host/extraction-worker.mjs` bundle the extraction supervisor executes. */
+  extractionWorkerPath: string;
   problems: string[];
   hint: string | null;
 }
@@ -121,6 +123,18 @@ function resolveTerminalEntry(env: RuntimeEnvironment): string {
   return env.isPackaged
     ? join(env.resourcesPath, "app.asar.unpacked", "out", "host", "terminal.mjs")
     : join(env.appRoot, "out", "host", "terminal.mjs");
+}
+
+/**
+ * The document-extraction worker has its own bundle so it can never link the Pi
+ * SDK. It ships beside the other host entries.
+ */
+function resolveExtractionEntry(env: RuntimeEnvironment): string {
+  const override = env.env.PI_DESKTOP_EXTRACTION_ENTRY?.trim();
+  if (override) return override;
+  return env.isPackaged
+    ? join(env.resourcesPath, "app.asar.unpacked", "out", "host", "extraction-worker.mjs")
+    : join(env.appRoot, "out", "host", "extraction-worker.mjs");
 }
 
 function buildCandidates(
@@ -186,6 +200,7 @@ export function resolveRuntime(env: RuntimeEnvironment): RuntimeResolution {
   const piHostPath = resolveHostEntry(env);
   const terminalHostPath = resolveTerminalEntry(env);
   const piCli = resolvePiCli(env);
+  const extractionWorkerPath = resolveExtractionEntry(env);
   const problems: string[] = [];
   const piCliPath = piCli.exists ? piCli.path : null;
   if (!piCli.exists) {
@@ -234,6 +249,7 @@ export function resolveRuntime(env: RuntimeEnvironment): RuntimeResolution {
       piHostPath,
       piCliPath,
       terminalHostPath,
+      extractionWorkerPath,
       problems,
       hint: "Run `npm run runtime:fetch` to install the bundled Node runtime (add --force to repair an existing one).",
     };
@@ -268,6 +284,7 @@ export function resolveRuntime(env: RuntimeEnvironment): RuntimeResolution {
     piHostPath,
     piCliPath,
     terminalHostPath,
+    extractionWorkerPath,
     problems,
     hint: null,
   };

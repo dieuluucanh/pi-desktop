@@ -7,6 +7,7 @@ import {
   MIN_SIDEBAR_WIDTH,
   clampSidebarWidth,
   mergePrefs,
+  sanitizeAttachmentDraftIds,
   sanitizeDrafts,
   sanitizePrefs,
 } from "../../src/shared/prefs";
@@ -32,6 +33,7 @@ describe("sanitizePrefs", () => {
         "desktopKeybindings",
         "dialogs",
         "drafts",
+        "attachmentDraftIds",
         "editor",
         "explorer",
         "followSystemTheme",
@@ -55,6 +57,24 @@ describe("sanitizePrefs", () => {
       ].sort(),
     );
     expect(result.theme).toBe("light");
+  });
+
+  it("persists only bounded opaque attachment draft identities", () => {
+    const draftId = "123e4567-e89b-42d3-a456-426614174001";
+    expect(sanitizePrefs({}).attachmentDraftIds).toEqual({});
+    expect(
+      sanitizeAttachmentDraftIds({
+        tab: draftId,
+        bad: "not-an-id",
+        ["x".repeat(129)]: draftId,
+      }),
+    ).toEqual({ tab: draftId });
+    expect(sanitizePrefs({ attachmentDraftIds: { tab: draftId } }).attachmentDraftIds).toEqual({
+      tab: draftId,
+    });
+    expect(
+      mergePrefs(DEFAULT_PREFS, { attachmentDraftIds: { tab: draftId } }).attachmentDraftIds,
+    ).toEqual({ tab: draftId });
   });
 
   it("ignores a legacy favourites key from an older app-state.json", () => {

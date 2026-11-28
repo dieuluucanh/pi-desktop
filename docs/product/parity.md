@@ -100,6 +100,31 @@ Status legend: ✅ implemented · 🚧 planned (step) · ⛔ deliberately out of
 | `#document` Office mentions             | ✅ (bridge extension) | ✅ step 20 (the app's own provider is fed by the live pane registry, so mentions work even when the bridge's provider is absent)                          |
 | External editor for long prompts        | ✅                    | ✅ step 21 (`Ctrl+G` expanded editor, OS editor spawned without a shell and awaited; TUI editors need a TTY)                                              |
 
+### File references versus attachments
+
+Pi 1.5's CLI accepts `@path` arguments at startup and includes text-file
+contents or supported images in the first prompt. Interactive `@path` completion
+instead inserts a file reference for the agent's tools. Desktop's `@` completion
+and Explorer drops follow that reference workflow, and `#` remains the optional
+Office document mention.
+
+The **paperclip, file paste and external drop** are a separate immutable
+snapshot path (`docs/guide/attachments.md`): bounded UTF-8 text/code/CSV and
+supported raster images are imported into the profile store and sent through
+Pi's native text/image prompt contract. Attachments are idle-only and are never
+consumed by commands, skills or templates. PDF, modern Office and OpenDocument
+files show "local conversion is unavailable" until milestone B; audio/video,
+legacy/macro/encrypted Office and archives are refused with a specific reason.
+
+Pi's SDK user-message contract is text and image content, not native PDF or
+Office document blocks. A successful managed send means **SDK acceptance**
+(preflight + a persisted user entry/association), not that a provider retained
+or read every image. Images may be normalized/resized by Pi or the app, and
+trusted extensions may rewrite prompt content; the transcript card is honest
+about what Pi persisted. The renderer cannot call the private attachment
+methods directly, and a host that does not advertise the protocol is refused
+before any bytes are staged.
+
 ## Office
 
 | Capability                                                                | Terminal Pi                         | Pi Desktop                                                                                                                                                |

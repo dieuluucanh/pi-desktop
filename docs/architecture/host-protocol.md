@@ -20,14 +20,73 @@ is declared but not yet wired answers
 it** in the message — see “Implementation status” below, which is the current
 truth and supersedes the group table's implications.
 
-| Group         | Methods                                                                                                                                                                                                                                                                                                          |
-| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| transport     | `host.hello`, `host.ping`, `host.shutdown`, `host.blobs.read`, `host.metrics`                                                                                                                                                                                                                                    |
-| sessions      | `session.create/open/list/resume/fork/clone/delete/rename/exportHtml`                                                                                                                                                                                                                                            |
-| conversation  | `prompt`, `steer`, `followUp`, `abort`, `clearQueue`                                                                                                                                                                                                                                                             |
-| state         | `state.get`, `messages.get`, `entries.get`, `tree.get`, `stats.get`, `compact`, `commands.list`, `tools.*`, `model.*`, `thinking.*`                                                                                                                                                                              |
-| configuration | `settings.*`, `providers.*`, `packages.*`                                                                                                                                                                                                                                                                        |
-| other         | `oi.respond` (extension UI answers), `oi.state`, `oi.editorText`, `completion.suggest`, `completion.apply` (extension UI + composer bridge), `tui.state`, `tui.resize`, `tui.input` (extension TUI surface), `files.list`, `text.models`, `text.generate`, `text.cancel` (session-less generation, control host) |
+| Group               | Methods                                                                                                                                                                                                                                                                                                         |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| transport           | `host.hello`, `host.ping`, `host.shutdown`, `host.blobs.read`, `host.metrics`                                                                                                                                                                                                                                   |
+| sessions            | `session.create/open/list/resume/fork/clone/delete/rename/exportHtml`                                                                                                                                                                                                                                           |
+| conversation        | `prompt`, `steer`, `followUp`, `abort`, `clearQueue`                                                                                                                                                                                                                                                            |
+| state               | `state.get`, `messages.get`, `entries.get`, `tree.get`, `stats.get`, `compact`, `commands.list`, `tools.*`, `model.*`, `thinking.*`                                                                                                                                                                             |
+| configuration       | `settings.*`, `providers.*`, `packages.*`                                                                                                                                                                                                                                                                       |
+| other               | `oi.respond`, `oi.state`, `oi.editorText`, `completion.suggest`, `completion.apply`, `tui.state`, `tui.resize`, `tui.input`, `files.list`, `text.models`, `text.generate`, `text.cancel` (control host)                                                                                                                                                                       |
+| private attachments | `attachments.transfer.begin/chunk/seal/cancel`, `attachments.plan`, `attachments.prompt`, `attachments.submissions.list`, `attachments.context`, `attachments.image.begin/chunk/prepare/read/cancel`, `attachments.readiness` (parent-only; main pins and the private-method allowlist block renderer requests) |
+
+### Reference-based attachments (private transport)
+
+The private transfer, planning, dispatch and image-preparation handlers exist,
+but the renderer cannot call them: main accepts these methods only through a
+generation-bound `SessionHostPin`, and generic renderer `session.request`
+rejects them. Main stages a bounded lease in ordered chunks; the host verifies
+the staged bytes, plans against its live model/context, materializes only
+approved text/image representations, and dispatches through Pi's public SDK.
+`attachments.prompt` uses the shared versioned request contract plus a
+host-owned plan and transfer binding.
+
+The greeting advertises the attachment protocol version the host actually
+implements (its attachment handlers and ports), never a hard-coded capability.
+Main treats the greeting strictly: a missing, older, newer or malformed version
+is refused before any preparation or staging, with no legacy fallback. Product
+availability is a separate, trusted main-process gate (`PI_DESKTOP_ATTACHMENTS`
+for development/tests; packaged builds stay off until the milestone-A gate), so
+protocol support never implies the feature is enabled in a build.
+
+Readiness is a metadata-only, non-submitting pass: main sends descriptor bytes
+and dimensions (never content), and the host evaluates them with the same
+policy used for delivery planning against its live model/context/history. It
+returns per-file and aggregate reasons plus the model and context revision; it
+stages nothing and never creates a dispatch attempt. The renderer debounces it
+and discards stale answers, and a readiness result is not send authority.
+
+Image originals follow a separate, narrower channel. `attachments.image.*`
+stages one owner-checked original snapshot, runs Pi's public image preparation
+(`createSdkImageEncoder` behind `prepareRasterImage`) in the host, and lets main
+pull the prepared representation plus a bounded thumbnail back in chunks. Main
+re-inspects and re-hashes every returned byte before persisting its own
+immutable representation, so the host is a decoder endpoint, not an authority.
+Generic `prompt.images` and direct image/file fields on `steer`/`followUp`
+remain rejected; ordinary image input only travels the managed path.
+
+Delivery uses the public SDK `session.prompt` with native image preprocessing
+and trusted extension behavior. There is no provider allowlist, hook refusal or
+prompt replacement. `accepted` means Pi preflight acceptance plus a durable
+SessionManager association; it is not proof that a provider retained or read
+the image. Known `images.blockImages` settings still block. Capability
+negotiation and the milestone-A release gate are tracked separately, so a host
+whose `attachmentDeliveryVersion` is `null` must not be treated as supporting
+delivery.
+
+Main keeps the durable side of a send in its own profile store, not in the
+renderer or the session JSONL: a bounded submission journal (never source text,
+bytes or paths) records dispatch/terminal state, accepted originals and
+representations are promoted to profile-scoped session/branch owners, and a
+30-day tombstone keeps a deleted session's copies recoverable. The journal
+retires only terminal, ownership-reconciled attempts; unresolved or
+protected-capacity records block a send with `storage_full` rather than evicting
+evidence. `attachments.storage`/`attachments.clearStorage` expose bounded
+usage and an explicit reclamation action; `attachments.exportBundle` /
+`attachments.importBundle` are local-only, validate a versioned zip and never
+treat manifest ids or paths as permissions. `/share`, `/bug` and the sanitized
+export use one attachment-private projection; native HTML/JSONL exports remain
+truthful and are gated by a content confirmation.
 
 ## Framing rules
 
@@ -122,7 +181,7 @@ drives the real bundle when `out/host/index.mjs` has been built.
 | models & thinking | `model.list`, `model.available`, `model.set`, `model.cycle`, `thinking.levels`, `thinking.set`, `thinking.cycle`                                                                                                                                                                                                                                                                                                                                                                                                                                | `src/host/session-core.ts`                                                                                                        |
 | session behaviour | `session.queueMode`, `session.autoCompaction`, `session.autoRetry`, `session.abortRetry`, `session.abortCompaction`, `session.abortBranchSummary`                                                                                                                                                                                                                                                                                                                                                                                               | `src/host/session-core.ts`                                                                                                        |
 | settings          | `settings.get`, `settings.set`, `settings.raw` (read **or** write a whole scope), `settings.flush`; every response carries **both** scopes, the two file paths + mtimes, `drainErrors` and the project-trust flag. Writes are schema-validated: a named `SettingsManager` setter when Pi has one, otherwise an atomic whole-document edit, always with a backup before the first write                                                                                                                                                          | `src/host/settings.ts` + `src/host/sdk/settings.ts`, in both cores                                                                |
-| control host      | `settings.*`, `session.list` (all projects), `session.delete` (validates; main trashes), `session.rename` (a stored, closed session), `providers.*`, `providers.custom`, `packages.*`, `project.inspect`, `project.trust`, `resources.list` (loads a project's resources with no session), `themes.*`, `keybindings.*`, `text.models`/`text.generate`/`text.cancel` (one-shot, no session)                                                                                                                                                      | `src/host/control-core.ts`                                                                                                        |
+| control host      | `settings.*`, `session.list` (all projects), `session.delete` (validates; main trashes), `session.rename` (a stored, closed session), `providers.*`, `providers.custom`, `packages.*`, `project.inspect`, `project.trust`, `resources.list` (loads a project's resources with no session), `themes.*`, `keybindings.*`                                                                                                                                                                                                                          | `src/host/control-core.ts`                                                                                                        |
 | extensions hub    | `resources.list` (both cores): extensions/skills/prompts/themes with source, scope, origin, contributed tools/commands/shortcuts/flags, loader diagnostics and live `extension_error` history                                                                                                                                                                                                                                                                                                                                                   | `src/host/resources.ts` (+ `src/host/sdk/resources.ts`)                                                                           |
 | extension UI      | `oi.respond` + `oi.request` events; `oi.state` (the pushed snapshot, also readable on demand), `oi.editorText` (composer mirror), `completion.suggest`/`completion.apply` (host-run extension autocomplete providers). The full `ExtensionUIContext` is bound to every session via `bindSession`                                                                                                                                                                                                                                                | `src/host/extension-ui.ts` + `src/host/sdk/extension-ui.ts` (session host only)                                                   |
 | TUI surface       | `tui.state` (pull the whole surface snapshot), `tui.resize` (the **session column's** measured rows/cols), `tui.input` (raw terminal bytes). The host emulates `TUI` for `ctx.ui.custom()`, resolves overlay geometry and renders `custom`/`header`/`footer`/`widgetsAbove`/`widgetsBelow` to ANSI frames; the renderer converts them to HTML, docks a bottom sheet, floats any other overlay, and forwards DOM keys/wheel                                                                                                                      | `src/host/tui-surface.ts` + `src/host/sdk/tui-surface.ts`, `src/renderer/src/tui/*` (session host only)                           |
@@ -164,21 +223,6 @@ legacy await-the-operation behavior is preserved for other callers.
   (for example `/commit`'s `sendUserMessage`) is tagged too.
   `message_start.promptOrigin` is the only source of the transcript's command
   row; the renderer never infers it.
-- `queue_update` carries a host-added `queueOrigins: { steering, followUp }`
-  annotation, one `"user"` | `"extension"` per entry **in queue order**. The
-  SDK's own arrays stay complete (the snapshot and `isSessionBusyState` are
-  unchanged); the annotation is the renderer's only source of ownership. The
-  host attributes by diffing the SDK queues around a renderer request (`prompt`
-  with `streamingBehavior`, `steer`, `followUp`) and re-emits **one** annotated
-  `queue_update` right after it records the admitted texts, because the SDK's
-  own frame goes out first. The annotation is capability-gated: a session
-  without `getSteeringMessages`/`getFollowUpMessages` sends none, and the
-  renderer then treats every entry as the user's.
-- `clearQueue` answers `{ cleared, dropped }`: `cleared` holds only the user's
-  texts, and `dropped` counts the extension-owned entries the SDK-wide clear
-  discarded (the SDK has no selective clear, so this return is a report, not a
-  filter). `dropped` is absent when the host cannot attribute — the capability
-  gate above — and `cleared` is then the SDK's list unchanged.
 
 ### Packages (plan step 14)
 
@@ -453,80 +497,7 @@ has no session-state channel, no editor mirror, and cannot evaluate extension
 autocomplete providers), `tui.state`/`tui.resize`/`tui.input` (RPC mode's
 `custom()` returns `undefined`, so it has no terminal to render into or feed
 keys to), `render.request`/`render.markdown` (RPC mode renders tool/message
-components in-process; it has no client that could display ANSI lines),
-`text.models`/`text.generate`/`text.cancel` (RPC mode has no session-less
-one-shot: its only model path is a prompt into a live session).
-
-### Session-less text generation (2026-11-25 commit-AI plan, step 16)
-
-`text.models`, `text.generate` and `text.cancel` are the app's only **session-less**
-model methods. They are served by the **control host only**
-(`src/host/text-generation.ts`, registered in `CONTROL_METHODS`), through the
-`ModelCompletionPort` on `ProviderPort.completion` — Pi's
-`ModelRuntime.completeSimple`, never an `AgentSession`. They exist because the
-commit box needs a message without writing a transcript turn, and `/commit`
-(Workflow) is a session command. They are app-internal — the reason they sit in
-the “no RPC equivalent” list above, by the same rule as `providers.runtimeKey`.
-
-| Method          | Params                                                                              | Result                                                                                    |
-| --------------- | ----------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
-| `text.models`   | `{ cwd?: string \| null }`                                                          | `{ models: ModelChoice[], defaultModel: ModelChoice \| null, defaultAvailable: boolean }` |
-| `text.generate` | `{ requestId, cwd?, model?: { provider, id } \| null, system, prompt, maxTokens? }` | `{ requestId, text, model: ModelChoice, usage?: { input, output } }`                      |
-| `text.cancel`   | `{ requestId }`                                                                     | `{ ok: true }` (idempotent: an unknown or finished id is a no-op, not an error)           |
-
-`ModelChoice` is `{ provider, id, name }`. `requestId` is
-`/^[A-Za-z0-9_-]{1,64}$/` — the pair key for one generate/cancel. A `null`
-`model` means **Default**, which the host resolves from the project's then the
-global `defaultProvider`/`defaultModel`; when that default is not in the
-catalogue it falls back to the first available row, and `text.models` still
-reports the saved ref with `defaultAvailable: false` so the picker can say so.
-
-**Bounds.** `sanitizeTextGenerationRequest` enforces `MAX_SYSTEM_CHARS`
-(4 000), `MAX_PROMPT_CHARS` (120 000) and `MAX_OUTPUT_TOKENS` (2 048, default
-1 024). A violation is `bad_request`, never a silent truncation. A missing port
-answers `not_implemented` — the handlers are always registered, which is what
-keeps the control host's `handlers == CONTROL_METHODS` invariant true.
-
-**Failure codes.** `bad_request`, `not_implemented`, `no_model`,
-`unknown_model`, `aborted`, `timeout`, `provider_error`. Provider failures are
-values, not rejections in the SDK, so the adapter inspects `stopReason`: `error`
-→ `provider_error` (with the provider's `errorMessage`), `aborted` → `aborted`,
-and an empty `text` is refused rather than returned as a "successful" empty
-message. `length` stays a success — the text is real, just cut off — because the
-commit-message cleaner re-caps an over-long subject and body.
-
-**Two clocks.** The host owns a `GENERATION_TIMEOUT_MS = 90_000` abort per
-request, so it can answer `timeout` itself; `session-service`'s
-`REQUEST_TIMEOUT_OVERRIDES` gives `text.generate` 120 s, longer than the host's
-own clock so the typed code wins over a transport refusal.
-
-**Never replayed.** `text.generate` is in neither `PASSIVE_METHODS` nor
-`READ_ONLY_RETRY_METHODS`. Every other retryable method is a read or an
-idempotent state write; a generation is neither — a replay would bill a second
-call and return a second, different message. Cancellation is explicit
-(`text.cancel`), and a dropped frame surfaces as a failure the user can retry.
-
-**Session affinity.** `createCompletion` in `src/host/sdk/providers.ts` mints one
-opaque UUID per control-host process — a default parameter evaluated once, when
-`createSdkProviderPort` builds the port — and passes it as `sessionId` to
-`ModelRuntime.completeSimple`. The id must be non-empty and identical across
-every call from that process: a blank value is replaced rather than forwarded,
-and a fresh id per request would degrade provider routing and prompt-cache
-affinity. This is not an OpenCode-only flag — `sessionId` is the request-level
-conversation id for _every_ provider (`StreamOptions.sessionId`,
-`pi-ai/dist/types.d.ts:139-144`). A normal `AgentSession`, and a `pi` CLI
-session, gets that id from `SessionManager`; the control host has no session,
-hence the explicit value. OpenCode Go and Zen uniquely **require** it as
-`x-opencode-session` and answer HTTP 400 `MissingSessionID` without it; the
-header is emitted only where `isOpenCode()` holds — provider id exactly
-`opencode`/`opencode-go`, or a baseUrl whose hostname is exactly `opencode.ai`
-(`pi-ai/dist/utils/identity.js:61-63,86-92`). The same value also becomes
-`prompt_cache_key` for OpenAI-compatible and Azure endpoints (`api.openai.com`,
-or long cache retention), `x-affinity` and the payload's `promptCacheKey` for
-Mistral, and `x-session-affinity`/`x-session-id` where the model's compat
-enables session-affinity headers. The id is host-owned and stays on the host
-side of the call: the `text.generate` wire shape is unchanged, so no renderer or
-protocol change follows from it.
+components in-process; it has no client that could display ANSI lines).
 
 ### Host build identity and stale recycling (2026-10-24)
 

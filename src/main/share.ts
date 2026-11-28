@@ -14,6 +14,14 @@
 import { zipSync, strToU8 } from "fflate";
 import type { CommandRunner } from "./office/exec";
 import type { FsPort } from "./fs-port";
+import {
+  redactSecrets,
+  sanitizeDiagnostics,
+  sanitizeTranscriptJsonl,
+  TranscriptTooLargeError,
+} from "./share-sanitize";
+
+export { redactSecrets } from "./share-sanitize";
 
 /** The viewer base Pi uses; `PI_SHARE_VIEWER_URL` overrides it. */
 export const DEFAULT_SHARE_VIEWER_URL = "https://pi.dev/session/";
@@ -32,27 +40,6 @@ export function parseGistId(output: string): string | null {
   return match?.[1] ?? null;
 }
 
-/**
- * Redacts the shapes a transcript usually leaks: provider keys, bearer tokens,
- * GitHub tokens and long base64-ish blobs that look like credentials.
- */
-export function redactSecrets(text: string): string {
-  let redacted = text;
-  const patterns: Array<[RegExp, string]> = [
-    [/\b(sk-[A-Za-z0-9_-]{16,})/g, "[redacted key]"],
-    [/\b(ghp_|gho_|ghu_|ghs_|ghr_|github_pat_)[A-Za-z0-9_]{16,}/g, "[redacted github token]"],
-    [/\b(Bearer\s+)[A-Za-z0-9._-]{16,}/gi, "$1[redacted]"],
-    [/\b(xox[baprs]-[A-Za-z0-9-]{10,})/g, "[redacted slack token]"],
-    [/\b(AKIA|ASIA)[A-Z0-9]{16}\b/g, "[redacted aws key]"],
-    [
-      /\b(api[_-]?key|token|secret|password|authorization)\b(\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,}]+)/gi,
-      "$1$2[redacted]",
-    ],
-  ];
-  for (const [pattern, replacement] of patterns) redacted = redacted.replace(pattern, replacement);
-  return redacted;
-}
-
 export interface ShareResult {
   ok: boolean;
   /** The gist page (for the user to delete/rotate). */
@@ -62,7 +49,13 @@ export interface ShareResult {
   /** The local file that was uploaded, kept for "show me the file". */
   file?: string;
   /** Stable codes so the renderer can pick the right message. */
-  error?: "gh_missing" | "gh_not_authenticated" | "gh_failed" | "no_file" | "fs_failed";
+  error?:
+    | "gh_missing"
+    | "gh_not_authenticated"
+    | "gh_failed"
+    | "no_file"
+    | "fs_failed"
+    | "sanitize_failed";
   detail?: string;
 }
 
@@ -90,11 +83,26 @@ function shareFileName(sessionFile: string, now: number): string {
 export async function shareSession(deps: ShareDeps, sessionFile: string): Promise<ShareResult> {
   const raw = await deps.fs.readTextFile(sessionFile);
   if (raw === null || raw.length === 0) return { ok: false, error: "no_file" };
+  let sanitized: string;
+  try {
+    // Attachment content, images, names and descriptors are removed before the
+    // credential redaction pass; the public gist never receives the raw file.
+    sanitized = redactSecrets(sanitizeTranscriptJsonl(raw).jsonl);
+  } catch (error) {
+    return {
+      ok: false,
+      error: "sanitize_failed",
+      detail:
+        error instanceof TranscriptTooLargeError
+          ? "This session is too large to sanitize safely."
+          : "The session could not be sanitized.",
+    };
+  }
   const fileName = shareFileName(sessionFile, (deps.now ?? Date.now)());
   const file = `${deps.scratchDir}/${fileName}`;
   try {
     await deps.fs.ensureDir(deps.scratchDir);
-    await deps.fs.writeTextFile(file, redactSecrets(raw));
+    await deps.fs.writeTextFile(file, sanitized);
   } catch (error) {
     return { ok: false, error: "fs_failed", detail: String(error) };
   }
@@ -135,6 +143,8 @@ export interface BugReportInput {
   diagnostics?: unknown;
   /** The session JSONL contents, when the user consents to sharing it. */
   transcript?: string | null;
+  /** True when `transcript` already came out of `sanitizeTranscriptJsonl`. */
+  transcriptSanitized?: boolean;
   /** What the user was doing (the `/bug <hint>` argument). */
   hint?: string | null;
   /** A local, non-LLM summary: first message + counts + model. */
@@ -154,13 +164,42 @@ export function bugReportEntries(
   now = Date.now(),
 ): Record<string, Uint8Array> {
   const entries: Record<string, Uint8Array> = {};
+  let transcript = input.transcript ?? null;
+  let sanitizeNotes: {
+    imagesRemoved: number;
+    managedSectionsRemoved: number;
+    omittedUserEntries: number;
+    omittedEntries: number;
+    warnings: readonly string[];
+  } | null = null;
+  if (transcript !== null && transcript.length > 0 && input.transcriptSanitized !== true) {
+    const sanitized = sanitizeTranscriptJsonl(transcript);
+    transcript = sanitized.jsonl;
+    sanitizeNotes = {
+      imagesRemoved: sanitized.removedImages,
+      managedSectionsRemoved: sanitized.removedManagedSections,
+      omittedUserEntries: sanitized.omittedUserEntries,
+      omittedEntries: sanitized.omittedEntries,
+      warnings: sanitized.warnings,
+    };
+  }
+  const includesTranscript = typeof transcript === "string" && transcript.length > 0;
   const report = {
     createdAt: new Date(now).toISOString(),
     versions: input.versions,
     hint: input.hint ?? null,
     summary: input.summary,
-    diagnostics: input.diagnostics ?? null,
-    includesTranscript: typeof input.transcript === "string" && input.transcript.length > 0,
+    diagnostics: sanitizeDiagnostics(input.diagnostics ?? null),
+    includesTranscript,
+    attachmentPrivacy: {
+      policy: "attachments-excluded",
+      originals: false,
+      inlineImages: false,
+      managedText: false,
+      names: false,
+      note: "Assistant answers and user prose may still quote attachment details.",
+      ...(sanitizeNotes ?? {}),
+    },
   };
   entries["report.json"] = strToU8(JSON.stringify(report, null, 2));
   entries["summary.txt"] = strToU8(
@@ -168,6 +207,9 @@ export function bugReportEntries(
       `Pi Desktop bug report — ${new Date(now).toISOString()}`,
       "",
       input.summary,
+      "",
+      "Attachments: original files, inline images and managed file text are excluded. " +
+        "Answers or prose may still quote them.",
       "",
       input.hint ? `What happened: ${input.hint}` : "",
       "",
@@ -178,9 +220,10 @@ export function bugReportEntries(
       .filter((line, index, lines) => line.length > 0 || lines[index - 1] !== "")
       .join("\n"),
   );
-  if (typeof input.transcript === "string" && input.transcript.length > 0) {
-    // The transcript is redacted: a bug report is uploaded, so it leaves the machine.
-    entries["session.jsonl"] = strToU8(redactSecrets(input.transcript));
+  if (typeof transcript === "string" && transcript.length > 0) {
+    // The transcript is already the attachment-private projection; credentials
+    // are still redacted because this file leaves the machine when uploaded.
+    entries["session.jsonl"] = strToU8(redactSecrets(transcript));
   }
   return entries;
 }

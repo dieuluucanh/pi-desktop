@@ -154,7 +154,7 @@ export function handleMenuCommand(command: MenuCommand, deps?: Partial<MenuActio
         store.setHint("Open a session first — there is nothing to export.");
         return;
       }
-      void store.exportSessionHtml(tabId);
+      store.requestExport(tabId, "html");
       return;
     }
     case "command-palette":

@@ -147,6 +147,8 @@ export interface HostInfo {
       path: string;
       disabledBy: "safe-mode" | "missing-bundle" | "invalid-bundle" | null;
     };
+    /** Absent or null means reference-based attachment delivery is unavailable. */
+    attachmentDeliveryVersion?: number | null;
   };
 }
 
@@ -156,6 +158,14 @@ export interface HostEvent {
   /** Monotonic attachment counter; a reload keeps the id but bumps this. */
   sessionEpoch?: number;
   payload?: unknown;
+}
+
+/** Main-only reservation of one process incarnation, not a session permission. */
+export interface HostProcessPin {
+  readonly generation: number;
+  isCurrent(): boolean;
+  /** Synchronous and idempotent; stale releases cannot affect a new process. */
+  release(): void;
 }
 
 export interface HostHandle {
@@ -182,7 +192,9 @@ export interface HostHandle {
   note?(message: string): void;
   request(method: HostMethod, params?: unknown, options?: { timeoutMs?: number }): Promise<unknown>;
   on(event: string, listener: HostEventListener): () => void;
-  /** True when the injected policy says this host must stay alive. */
+  /** Reserve this ready process against automatic idle/RSS recycling. */
+  acquirePin(): HostProcessPin;
+  /** True when policy or a live process reservation keeps this host alive. */
   pinned(): boolean;
   /** True when the host is ready and has no request in flight. */
   isIdle(): boolean;
@@ -465,6 +477,8 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
     readonly officeHost: boolean;
     private spec: HostSpawnSpec;
     private child: SpawnedHostProcess | null = null;
+    private processGeneration = 0;
+    private processPins = 0;
     private state: HostStatus = "starting";
     private readonly emitter = new EventEmitter();
     private readonly pending = new Map<number, Pending>();
@@ -753,6 +767,8 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
       ];
       const child = spawner(options.nodePath, args, { cwd: this.spec.cwd, env, windowsHide: true });
       this.child = child;
+      this.processGeneration++;
+      this.processPins = 0;
       // Rotate, never truncate: a restart loop used to erase the very evidence
       // that explained it. Clear the in-memory tail and memory sample too, so
       // Diagnostics never mixes two processes.
@@ -1020,7 +1036,33 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
       return info;
     }
 
+    acquirePin(): HostProcessPin {
+      const child = this.child;
+      if (!child || this.state !== "ready" || this.stopping)
+        throw new HostNotRunningError(this.sessionId);
+      if (this.processPins >= 1_000) throw new Error("host reservation limit reached");
+      const generation = this.processGeneration;
+      this.processPins++;
+      let released = false;
+      return Object.freeze({
+        generation,
+        isCurrent: () =>
+          !released &&
+          this.child === child &&
+          this.processGeneration === generation &&
+          this.state === "ready" &&
+          !this.stopping,
+        release: () => {
+          if (released) return;
+          released = true;
+          if (this.child === child && this.processGeneration === generation) this.processPins--;
+        },
+      });
+    }
+
     pinned(): boolean {
+      if (this.processPins > 0 && this.child && this.state === "ready" && !this.stopping)
+        return true;
       try {
         return options.isPinned?.(this.sessionId) === true;
       } catch {
@@ -1071,8 +1113,8 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
         // path; the user can restart it and the RSS watchdog still applies.
         busy = true;
       }
-      if (busy) {
-        this.appendLog("info", "keeping host alive: the session is still working");
+      // A reservation or new request may have appeared while state.get yielded.
+      if (busy || this.pinned() || this.pending.size > 0) {
         this.scheduleIdleCheck();
         return;
       }
@@ -1151,10 +1193,8 @@ export function createHostSupervisor(options: HostSupervisorOptions): HostSuperv
         } catch {
           busy = true;
         }
-        if (busy) {
-          this.appendLog("info", "keeping host alive: the session is still working");
-          return;
-        }
+        // The probe yielded: a newly acquired pin must win over recycling.
+        if (busy || this.pinned() || this.bridgeOwner() || this.pending.size > 0) return;
         this.overMemoryValue = false;
         this.appendLog(
           "info",

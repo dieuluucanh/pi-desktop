@@ -28,6 +28,7 @@ import {
 } from "../settings/SourceControlSettings";
 import { NotificationsSettingsCard } from "../settings/NotificationsSettings";
 import { EditorSettingsCard } from "../settings/EditorSettings";
+import { AttachmentStorageSettingsCard } from "../settings/AttachmentStorageSettings";
 import { TerminalSettingsCard } from "../settings/TerminalSettings";
 import { setSidebarWidth } from "../state/sidebar-width";
 import { ViewShell } from "./ViewShell";
@@ -360,6 +361,7 @@ export function SettingsView() {
       <div ref={notificationsCardRef}>
         <NotificationsSettingsCard />
       </div>
+      <AttachmentStorageSettingsCard />
 
       <div className="flex items-center justify-between gap-3">
         <h2 className="text-sm font-semibold">Pi settings</h2>

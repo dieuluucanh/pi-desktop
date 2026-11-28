@@ -272,6 +272,7 @@ export function installBridge(options: BridgeOptions = {}): BridgeHandles {
         viewerUrl: "https://pi.dev/session/#abc",
       }),
       bugReport: async () => ({ ok: true, path: "/tmp/report.zip", bytes: 10 }),
+      exportSanitized: async () => ({ ok: true, path: "/tmp/sanitized.jsonl", bytes: 10 }),
       editor: async () => ({ ok: false, error: "No external editor is configured." }),
     },
     revealPath: async () => true,

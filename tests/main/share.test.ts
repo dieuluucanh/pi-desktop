@@ -13,6 +13,7 @@ import {
 } from "../../src/main/share";
 import { createMemoryFsPort } from "../../src/main/fs-port";
 import { createFakeCommandRunner } from "../../src/main/office/exec";
+import { renderAttachmentTextSections } from "../../src/attachments/text";
 
 /**
  * `/share` and `/bug` (2026-10-26 session-parity plan step 18).
@@ -28,6 +29,92 @@ function shareFs(
   raw = '{"type":"message","message":{"role":"user","content":"hi sk-abcdefghijklmnopqrst"}}\n',
 ) {
   return createMemoryFsPort({ files: { [SESSION]: raw }, dirs: ["/scratch"] });
+}
+
+function managedSession(): string {
+  const originalId = "123e4567-e89b-42d3-a456-426614174010";
+  const body = "ATTACHMENT PRIVATE BODY";
+  const envelope = renderAttachmentTextSections([
+    { id: originalId, name: "secret-notes.txt", representationSha256: "d".repeat(64), text: body },
+  ]);
+  return (
+    [
+      {
+        type: "session",
+        version: 3,
+        id: "session-secret",
+        cwd: "C:/Users/alice/secret-project",
+      },
+      {
+        type: "message",
+        id: "user-entry-1",
+        message: {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: `Please review this
+
+${envelope}`,
+            },
+            { type: "image", mimeType: "image/png", data: "A".repeat(2_000) },
+          ],
+        },
+      },
+      {
+        type: "custom",
+        id: "association-1",
+        customType: "pi-desktop-attachment-submission",
+        data: {
+          version: 1,
+          planId: "123e4567-e89b-42d3-a456-426614174020",
+          turnId: "123e4567-e89b-42d3-a456-426614174021",
+          attemptId: "123e4567-e89b-42d3-a456-426614174022",
+          scope: {
+            authorityId: "123e4567-e89b-42d3-a456-426614174001",
+            leaseId: "123e4567-e89b-42d3-a456-426614174002",
+            profileKey: "a".repeat(64),
+            tabId: "tab-1",
+            draftId: "123e4567-e89b-42d3-a456-426614174003",
+            hostGeneration: 1,
+            processGeneration: 1,
+            sessionId: "session-1",
+            sessionEpoch: 1,
+            branchId: null,
+            revision: "revision-1",
+          },
+          sourceTextSha256: "b".repeat(64),
+          userEntryId: "user-entry-1",
+          textSha256: "c".repeat(64),
+          images: [],
+          createdAt: 1_000,
+          representations: [
+            {
+              representationId: "123e4567-e89b-42d3-a456-426614174011",
+              representationSha256: "d".repeat(64),
+              originalId,
+              originalSha256: "e".repeat(64),
+              modality: "text",
+              display: {
+                name: "secret-notes.txt",
+                originalKind: "text",
+                originalBytes: body.length,
+                representationBytes: new TextEncoder().encode(body).byteLength,
+                origin: "direct",
+                preparationVersion: "direct-v1",
+                warnings: [],
+                coverage: { kind: "entire-file" },
+                image: null,
+              },
+            },
+          ],
+        },
+      },
+      { type: "session_info", id: "info-1", name: "Secret named session" },
+    ]
+      .map((entry) => JSON.stringify(entry))
+      .join("\n") + "\n"
+  );
 }
 
 function deps(
@@ -178,5 +265,55 @@ describe("bug report", () => {
     ].join("\n");
     const messages = messagesFromJsonl(text) as Array<{ role: string }>;
     expect(messages.map((message) => message.role)).toEqual(["user", "assistant"]);
+  });
+
+  it("uploads only the attachment-private projection, never the managed envelope", async () => {
+    const raw = managedSession();
+    const context = deps(shareFs(raw));
+    const result = await shareSession(context, SESSION);
+    expect(result.ok).toBe(true);
+    expect(result.file).toBeTruthy();
+    const written = context.fs.files.get(normalize(result.file!)) ?? "";
+    expect(written).toContain("Please review this");
+    expect(written).not.toContain("ATTACHMENT PRIVATE BODY");
+    expect(written).not.toContain("secret-notes.txt");
+    expect(written).not.toContain("image/png");
+    expect(written).not.toContain("Secret named session");
+  });
+
+  it("keeps attachment content, images, names and descriptors out of every zip entry", async () => {
+    const entries = bugReportEntries(
+      {
+        versions: { app: "0.1.0" },
+        diagnostics: { runtimeProblems: [], cwd: "C:/Users/alice/secret-project" },
+        transcript: managedSession(),
+        hint: null,
+        summary: "First request: Please review this\nMessages: 2.",
+      },
+      1700000000000,
+    );
+    const decoded = Object.fromEntries(
+      Object.entries(entries).map(([name, bytes]) => [name, strFromU8(bytes)]),
+    );
+    for (const [name, text] of Object.entries(decoded)) {
+      expect(text, name).not.toContain("ATTACHMENT PRIVATE BODY");
+      expect(text, name).not.toContain("secret-notes.txt");
+      expect(text, name).not.toContain("image/png");
+      expect(text, name).not.toContain("Secret named session");
+      expect(text, name).not.toContain("secret-project");
+      expect(text, name).not.toContain("AAAAAAAA");
+    }
+    const report = JSON.parse(decoded["report.json"]!) as {
+      attachmentPrivacy: Record<string, unknown>;
+      includesTranscript: boolean;
+    };
+    expect(report.includesTranscript).toBe(true);
+    expect(report.attachmentPrivacy).toMatchObject({
+      originals: false,
+      inlineImages: false,
+      managedText: false,
+      names: false,
+    });
+    expect(decoded["summary.txt"]).toContain("Attachments:");
   });
 });

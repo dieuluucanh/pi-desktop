@@ -77,16 +77,13 @@ describe("/share", () => {
 
   it("explains a missing gh and offers the HTML export", async () => {
     stubShare({ session: async () => ({ ok: false, error: "gh_missing" }) });
-    const exportHtml = vi.fn(async () => undefined);
-    useAppStore.setState({ exportSessionHtml: exportHtml });
-
     await useAppStore.getState().openShare(TAB);
     render(<ShareDialog />);
 
     await waitFor(() => expect(screen.getByTestId("share-error")).toBeInTheDocument());
     expect(screen.getByText(/Install GitHub's CLI/)).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Export HTML instead" }));
-    expect(exportHtml).toHaveBeenCalledWith(TAB);
+    expect(useAppStore.getState().pendingExport).toEqual({ tabId: TAB, format: "html" });
   });
 
   it("reports a session without a file instead of calling the bridge", async () => {
@@ -112,7 +109,7 @@ describe("/bug", () => {
     await useAppStore.getState().openBugReport(TAB, "the queue lost a message");
     render(<ShareDialog />);
 
-    const checkbox = screen.getByRole("checkbox");
+    const checkbox = screen.getByRole("checkbox", { name: /session transcript/i });
     expect(checkbox).not.toBeChecked();
     await userEvent.click(screen.getByRole("button", { name: "Create zip" }));
 
@@ -136,7 +133,7 @@ describe("/bug", () => {
     await useAppStore.getState().openBugReport(TAB);
     render(<ShareDialog />);
 
-    await userEvent.click(screen.getByRole("checkbox"));
+    await userEvent.click(screen.getByRole("checkbox", { name: /session transcript/i }));
     await userEvent.click(screen.getByRole("button", { name: "Create zip" }));
 
     await waitFor(() =>

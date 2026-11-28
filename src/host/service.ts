@@ -87,6 +87,11 @@ export interface HostCapabilities {
     path: string;
     disabledBy: "safe-mode" | "missing-bundle" | "invalid-bundle" | null;
   };
+  /**
+   * Reference-based attachment protocol version this build actually implements
+   * (plan step 8). Null/absent means no support; the release gate is separate.
+   */
+  attachmentDeliveryVersion?: number | null;
 }
 
 export interface HostServiceOptions {
@@ -365,7 +370,14 @@ export function createHostService(options: HostServiceOptions): HostService {
     env: { blobDir: blobDir || process.env[BLOB_DIR_ENV] || null },
     startedAt: options.info.startedAt,
     buildId: options.info.buildId ?? null,
-    capabilities: options.info.capabilities ?? { checkpointsExtension: false },
+    capabilities: {
+      checkpointsExtension: false,
+      ...(options.info.capabilities ?? {}),
+      // Advertised by the composition root from the handlers/ports it actually
+      // wired. A host without the attachment handlers reports null, and the
+      // product release gate is a separate main-process decision.
+      attachmentDeliveryVersion: options.info.capabilities?.attachmentDeliveryVersion ?? null,
+    },
   });
 
   handlers["host.blobs.read"] = async (params: unknown): Promise<BlobReadResult> => {

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import {
   createSessionCore,
@@ -7,6 +8,15 @@ import {
   type SessionRuntimeRequest,
 } from "../../src/host/session-core";
 import { createSdkContributionBridge } from "../../src/host/sdk/contributions";
+import type { AttachmentDeliveryScope } from "../../src/shared/attachments";
+import { attachmentTranscriptCard } from "../../src/shared/attachments";
+import { renderAttachmentTextSections } from "../../src/attachments/text";
+import {
+  appendAttachmentSubmissionAssociation,
+  readAttachmentSubmissionHistory,
+} from "../../src/host/sdk/attachment-submission";
+import { createAttachmentTransferStore } from "../../src/host/attachment-transfer";
+import { createAttachmentImagePreparationStore } from "../../src/host/attachment-image-preparation";
 import type { HostMethod } from "../../src/shared/host-protocol";
 import type { HostRequestContext } from "../../src/host/service";
 
@@ -192,6 +202,538 @@ function harness(deps: Partial<SessionCoreDeps> = {}) {
   return { core, call, emitted, events, trustStore, forks, primary, forked, runtime };
 }
 
+const RACE_IDS = {
+  transferId: "123e4567-e89b-42d3-a456-426614174101",
+  turnId: "123e4567-e89b-42d3-a456-426614174102",
+  attemptId: "123e4567-e89b-42d3-a456-426614174103",
+  planId: "123e4567-e89b-42d3-a456-426614174104",
+  draftId: "123e4567-e89b-42d3-a456-426614174105",
+  representationId: "123e4567-e89b-42d3-a456-426614174106",
+  authorityId: "123e4567-e89b-42d3-a456-426614174107",
+} as const;
+
+async function stageAttachmentPlan(
+  dispatchAttachmentPrompt: NonNullable<SessionCoreDeps["dispatchAttachmentPrompt"]>,
+) {
+  const h = harness({
+    createAttachmentTransferStore: (current) =>
+      createAttachmentTransferStore({
+        now: () => 1_000,
+        current,
+        sha256: (value) => createHash("sha256").update(value).digest("hex"),
+        schedule: () => () => {},
+      }),
+    newAttachmentId: () => RACE_IDS.planId,
+    dispatchAttachmentPrompt,
+  });
+  await h.call("session.create");
+  h.primary.state.model = {
+    provider: "openai",
+    id: "fixture-model",
+    api: "openai-completions",
+    input: ["text", "image"],
+    inputLimits: { maxRequestBytes: 20_000_000 },
+  } as never;
+  h.primary.session.getContextUsage = () => ({ tokens: 100, contextWindow: 100_000 });
+  const hostContext = (await h.call("attachments.context")) as {
+    branchId: string | null;
+    revision: string;
+  };
+  const bytes = new TextEncoder().encode("race-test attachment");
+  const digest = createHash("sha256").update(bytes).digest("hex");
+  const scope: AttachmentDeliveryScope = {
+    authorityId: RACE_IDS.authorityId,
+    leaseId: RACE_IDS.transferId,
+    profileKey: "a".repeat(64),
+    tabId: "tab-1",
+    draftId: RACE_IDS.draftId,
+    hostGeneration: 1,
+    processGeneration: 1,
+    sessionId: "session-1",
+    sessionEpoch: 1,
+    branchId: hostContext.branchId,
+    revision: hostContext.revision,
+  };
+  const asset = {
+    original: {
+      id: RACE_IDS.draftId,
+      name: "race.txt",
+      kind: "text" as const,
+      bytes: bytes.length,
+      sha256: digest,
+    },
+    representation: {
+      id: RACE_IDS.representationId,
+      attachmentId: RACE_IDS.draftId,
+      modality: "text" as const,
+      origin: "direct" as const,
+      bytes: bytes.length,
+      originalSha256: digest,
+      representationSha256: digest,
+      preparationVersion: "desktop-direct-v1",
+      approved: true,
+      warnings: [],
+    },
+    image: null,
+    approvalDigest: null,
+  };
+  await h.call("attachments.transfer.begin", {
+    id: RACE_IDS.transferId,
+    scope,
+    expiresAt: 20_000,
+    assets: [asset],
+  });
+  await h.call("attachments.transfer.chunk", {
+    id: RACE_IDS.transferId,
+    representationId: RACE_IDS.representationId,
+    offset: 0,
+    encoded: Buffer.from(bytes).toString("base64"),
+  });
+  await h.call("attachments.transfer.seal", { id: RACE_IDS.transferId });
+  const planned = (await h.call("attachments.plan", {
+    id: RACE_IDS.transferId,
+    text: "Read this attachment",
+  })) as { outcome: string; plan?: { id: string } };
+  expect(planned).toMatchObject({ outcome: "ready", plan: { id: RACE_IDS.planId } });
+  return { h, planId: planned.plan!.id };
+}
+
+describe("private attachment transfer handlers", () => {
+  it.each(["model", "context"] as const)(
+    "blocks a plan when live %s changes before dispatch",
+    async (change) => {
+      const dispatch = vi.fn(async (input) => ({
+        outcome: "accepted" as const,
+        turnId: input.turnId,
+        attemptId: input.attemptId,
+        userEntryId: "user-entry",
+        associationEntryId: "association-entry",
+      }));
+      const { h, planId } = await stageAttachmentPlan(dispatch);
+      if (change === "model") {
+        h.primary.state.model = {
+          ...(h.primary.state.model as object),
+          id: "different-model",
+        } as never;
+      } else {
+        h.primary.emit({ type: "message_end" });
+      }
+
+      await expect(
+        h.call("attachments.prompt", {
+          version: 1,
+          transferId: RACE_IDS.transferId,
+          planId,
+          turnId: RACE_IDS.turnId,
+          attemptId: RACE_IDS.attemptId,
+          text: "Read this attachment",
+        }),
+      ).resolves.toMatchObject({ outcome: "blocked", reasons: ["stale_plan"] });
+      expect(dispatch).not.toHaveBeenCalled();
+      await h.core.dispose();
+    },
+  );
+
+  it("rechecks idle state after asynchronous staging and never dispatches into a streaming run", async () => {
+    let makeBusy = (): void => {};
+    const dispatch = vi.fn(async (input) => {
+      makeBusy();
+      expect(await input.revalidate()).toBe(false);
+      return {
+        outcome: "blocked" as const,
+        reasons: ["busy"] as const,
+        turnId: input.turnId,
+        attemptId: input.attemptId,
+      };
+    });
+    const { h, planId } = await stageAttachmentPlan(dispatch);
+    makeBusy = () => {
+      h.primary.state.streaming = true;
+    };
+
+    await expect(
+      h.call("attachments.prompt", {
+        version: 1,
+        transferId: RACE_IDS.transferId,
+        planId,
+        turnId: RACE_IDS.turnId,
+        attemptId: RACE_IDS.attemptId,
+        text: "Read this attachment",
+      }),
+    ).resolves.toMatchObject({ outcome: "blocked", reasons: ["busy"] });
+    expect(dispatch).toHaveBeenCalledOnce();
+    expect(h.primary.prompts).toEqual([]);
+    await h.core.dispose();
+  });
+
+  it("binds begin to the live session epoch and only seals verified staged bytes", async () => {
+    const h = harness({
+      createAttachmentTransferStore: (current) =>
+        createAttachmentTransferStore({
+          now: () => 1_000,
+          current,
+          sha256: (bytes) => createHash("sha256").update(bytes).digest("hex"),
+          schedule: (delay, callback) => {
+            const timer = setTimeout(callback, delay);
+            return () => clearTimeout(timer);
+          },
+        }),
+    });
+    await h.call("session.create");
+    const hostContext = (await h.call("attachments.context")) as {
+      branchId: string | null;
+      revision: string;
+    };
+    const bytes = Buffer.from("a");
+    const digest = createHash("sha256").update(bytes).digest("hex");
+    const scope: AttachmentDeliveryScope = {
+      authorityId: "123e4567-e89b-42d3-a456-426614174001",
+      leaseId: "123e4567-e89b-42d3-a456-426614174011",
+      profileKey: "a".repeat(64),
+      tabId: "tab-1",
+      draftId: "123e4567-e89b-42d3-a456-426614174002",
+      hostGeneration: 1,
+      processGeneration: 1,
+      sessionId: "session-1",
+      sessionEpoch: 1,
+      branchId: hostContext.branchId,
+      revision: hostContext.revision,
+    };
+    const id = "123e4567-e89b-42d3-a456-426614174011";
+    const asset = {
+      original: { id: scope.draftId, name: "note.txt", kind: "text", bytes: 1, sha256: digest },
+      representation: {
+        id: "123e4567-e89b-42d3-a456-426614174003",
+        attachmentId: scope.draftId,
+        modality: "text",
+        origin: "direct",
+        bytes: 1,
+        originalSha256: digest,
+        representationSha256: digest,
+        preparationVersion: "desktop-direct-v1",
+        approved: true,
+        warnings: [],
+      },
+      image: null,
+      approvalDigest: null,
+    };
+    const expiresAt = 20_000;
+    await expect(
+      h.call("attachments.transfer.begin", {
+        id,
+        scope: { ...scope, revision: "stale-revision" },
+        expiresAt,
+        assets: [asset],
+      }),
+    ).rejects.toThrow(/stale/);
+    await expect(
+      h.call("attachments.transfer.begin", {
+        id,
+        scope: { ...scope, sessionEpoch: 2 },
+        expiresAt,
+        assets: [asset],
+      }),
+    ).rejects.toThrow(/stale/);
+    await expect(
+      h.call("attachments.transfer.begin", { id, scope, expiresAt, assets: [asset] }),
+    ).resolves.toEqual({ staged: true });
+    await expect(
+      h.call("attachments.transfer.chunk", {
+        id,
+        representationId: asset.representation.id,
+        offset: 0,
+        encoded: bytes.toString("base64"),
+      }),
+    ).resolves.toEqual({ accepted: true });
+    await expect(h.call("attachments.transfer.seal", { id })).resolves.toEqual({ sealed: true });
+    h.primary.state.streaming = true;
+    await expect(
+      h.call("attachments.transfer.chunk", {
+        id,
+        representationId: asset.representation.id,
+        offset: 1,
+        encoded: "YQ==",
+      }),
+    ).rejects.toThrow(/unavailable/);
+    await h.core.dispose();
+  });
+
+  it("plans sealed host assets and dispatches only after one-shot revalidation", async () => {
+    const transferId = "123e4567-e89b-42d3-a456-426614174011";
+    const turnId = "123e4567-e89b-42d3-a456-426614174012";
+    const attemptId = "123e4567-e89b-42d3-a456-426614174016";
+    const planId = "123e4567-e89b-42d3-a456-426614174015";
+    const bytes = new TextEncoder().encode("private note");
+    const digest = createHash("sha256").update(bytes).digest("hex");
+    const scope: AttachmentDeliveryScope = {
+      authorityId: "123e4567-e89b-42d3-a456-426614174001",
+      leaseId: transferId,
+      profileKey: "a".repeat(64),
+      tabId: "tab-1",
+      draftId: "123e4567-e89b-42d3-a456-426614174002",
+      hostGeneration: 1,
+      processGeneration: 1,
+      sessionId: "session-1",
+      sessionEpoch: 1,
+      branchId: null,
+      revision: "revision-1",
+    };
+    const asset = {
+      original: {
+        id: scope.draftId,
+        name: "note.txt",
+        kind: "text",
+        bytes: bytes.length,
+        sha256: digest,
+      },
+      representation: {
+        id: "123e4567-e89b-42d3-a456-426614174003",
+        attachmentId: scope.draftId,
+        modality: "text",
+        origin: "direct",
+        bytes: bytes.length,
+        originalSha256: digest,
+        representationSha256: digest,
+        preparationVersion: "desktop-direct-v1",
+        approved: true,
+        warnings: [],
+      },
+      image: null,
+      approvalDigest: null,
+    };
+    const dispatch = vi.fn(
+      async (input: Parameters<NonNullable<SessionCoreDeps["dispatchAttachmentPrompt"]>>[0]) => {
+        expect(await input.revalidate()).toBe(true);
+        expect(input.isCurrent()).toBe(true);
+        return {
+          outcome: "accepted",
+          turnId: input.turnId,
+          attemptId: input.attemptId,
+          userEntryId: "user-entry-1",
+          associationEntryId: "association-entry-1",
+        } as const;
+      },
+    );
+    const h = harness({
+      createAttachmentTransferStore: (current) =>
+        createAttachmentTransferStore({
+          now: () => 1_000,
+          current,
+          sha256: (value) => createHash("sha256").update(value).digest("hex"),
+          schedule: (_delay, _callback) => () => {},
+        }),
+      newAttachmentId: () => planId,
+      dispatchAttachmentPrompt: dispatch,
+    });
+    await h.call("session.create");
+    const hostContext = (await h.call("attachments.context")) as {
+      branchId: string | null;
+      revision: string;
+    };
+    Object.assign(scope, { branchId: hostContext.branchId, revision: hostContext.revision });
+    h.primary.state.model = {
+      provider: "openai",
+      id: "fixture-model",
+      api: "openai-completions",
+      input: ["text", "image"],
+      inputLimits: {
+        maxRequestBytes: 20_000_000,
+        images: {
+          maxPerMessage: 10,
+          maxPerRequest: 10,
+          resize: { maxBytes: 12_000_000, maxWidth: 8_000, maxHeight: 8_000 },
+        },
+      },
+    } as never;
+    h.primary.session.getContextUsage = () => ({ tokens: 100, contextWindow: 100_000 });
+    await h.call("attachments.transfer.begin", {
+      id: transferId,
+      scope,
+      expiresAt: 20_000,
+      assets: [asset],
+    });
+    await h.call("attachments.transfer.chunk", {
+      id: transferId,
+      representationId: asset.representation.id,
+      offset: 0,
+      encoded: Buffer.from(bytes).toString("base64"),
+    });
+    await h.call("attachments.transfer.seal", { id: transferId });
+    const planned = (await h.call("attachments.plan", {
+      id: transferId,
+      text: "Read the note",
+    })) as { outcome: string; plan?: { id: string } };
+    expect(planned.outcome).toBe("ready");
+    expect(planned.plan?.id).toBe(planId);
+    await expect(
+      h.call("attachments.prompt", {
+        version: 1,
+        transferId,
+        planId,
+        turnId,
+        attemptId,
+        text: "Read the note",
+      }),
+    ).resolves.toEqual({
+      outcome: "accepted",
+      turnId,
+      attemptId,
+      userEntryId: "user-entry-1",
+      associationEntryId: "association-entry-1",
+    });
+    expect(dispatch).toHaveBeenCalledOnce();
+    expect(dispatch.mock.calls[0]?.[0].text).toContain("Read the note");
+    await h.call("attachments.transfer.cancel", { id: transferId });
+    await h.core.dispose();
+  });
+
+  it("fences ordinary sends and context mutations while an attachment dispatch is pending", async () => {
+    const transferId = "123e4567-e89b-42d3-a456-426614174021";
+    const turnId = "123e4567-e89b-42d3-a456-426614174022";
+    const attemptId = "123e4567-e89b-42d3-a456-426614174026";
+    const planId = "123e4567-e89b-42d3-a456-426614174025";
+    const bytes = new TextEncoder().encode("private note");
+    const digest = createHash("sha256").update(bytes).digest("hex");
+    const scope: AttachmentDeliveryScope = {
+      authorityId: "123e4567-e89b-42d3-a456-426614174001",
+      leaseId: transferId,
+      profileKey: "a".repeat(64),
+      tabId: "tab-1",
+      draftId: "123e4567-e89b-42d3-a456-426614174002",
+      hostGeneration: 1,
+      processGeneration: 1,
+      sessionId: "session-1",
+      sessionEpoch: 1,
+      branchId: null,
+      revision: "revision-1",
+    };
+    const asset = {
+      original: {
+        id: scope.draftId,
+        name: "note.txt",
+        kind: "text",
+        bytes: bytes.length,
+        sha256: digest,
+      },
+      representation: {
+        id: "123e4567-e89b-42d3-a456-426614174003",
+        attachmentId: scope.draftId,
+        modality: "text",
+        origin: "direct",
+        bytes: bytes.length,
+        originalSha256: digest,
+        representationSha256: digest,
+        preparationVersion: "desktop-direct-v1",
+        approved: true,
+        warnings: [],
+      },
+      image: null,
+      approvalDigest: null,
+    };
+    let releaseDispatch: () => void = () => {};
+    const dispatch = vi.fn(
+      async (input: Parameters<NonNullable<SessionCoreDeps["dispatchAttachmentPrompt"]>>[0]) => {
+        expect(await input.revalidate()).toBe(true);
+        await new Promise<void>((resolve) => (releaseDispatch = resolve));
+        return {
+          outcome: "accepted",
+          turnId: input.turnId,
+          attemptId: input.attemptId,
+          userEntryId: "user-entry-1",
+          associationEntryId: "association-entry-1",
+        } as const;
+      },
+    );
+    const h = harness({
+      createAttachmentTransferStore: (current) =>
+        createAttachmentTransferStore({
+          now: () => 1_000,
+          current,
+          sha256: (value) => createHash("sha256").update(value).digest("hex"),
+          schedule: (_delay, _callback) => () => {},
+        }),
+      newAttachmentId: () => planId,
+      dispatchAttachmentPrompt: dispatch,
+    });
+    await h.call("session.create");
+    const hostContext = (await h.call("attachments.context")) as {
+      branchId: string | null;
+      revision: string;
+    };
+    Object.assign(scope, { branchId: hostContext.branchId, revision: hostContext.revision });
+    h.primary.state.model = {
+      provider: "openai",
+      id: "fixture-model",
+      api: "openai-completions",
+      input: ["text", "image"],
+      inputLimits: {
+        maxRequestBytes: 20_000_000,
+        images: {
+          maxPerMessage: 10,
+          maxPerRequest: 10,
+          resize: { maxBytes: 12_000_000, maxWidth: 8_000, maxHeight: 8_000 },
+        },
+      },
+    } as never;
+    h.primary.session.getContextUsage = () => ({ tokens: 100, contextWindow: 100_000 });
+    await h.call("attachments.transfer.begin", {
+      id: transferId,
+      scope,
+      expiresAt: 20_000,
+      assets: [asset],
+    });
+    await h.call("attachments.transfer.chunk", {
+      id: transferId,
+      representationId: asset.representation.id,
+      offset: 0,
+      encoded: Buffer.from(bytes).toString("base64"),
+    });
+    await h.call("attachments.transfer.seal", { id: transferId });
+    expect(
+      await h.call("attachments.plan", { id: transferId, text: "Read the note" }),
+    ).toMatchObject({ outcome: "ready" });
+
+    const managed = h.call("attachments.prompt", {
+      version: 1,
+      transferId,
+      planId,
+      turnId,
+      attemptId,
+      text: "Read the note",
+    });
+    await vi.waitFor(() => expect(dispatch).toHaveBeenCalledOnce());
+
+    // While awaiting preflight, another Desktop send or a context/model change
+    // must not interleave with the attachment turn.
+    await expect(h.call("prompt", { text: "ordinary" })).rejects.toMatchObject({ code: "busy" });
+    await expect(h.call("steer", { text: "steer" })).rejects.toMatchObject({ code: "busy" });
+    await expect(h.call("model.set", { model: { provider: "x", id: "y" } })).rejects.toMatchObject({
+      code: "busy",
+    });
+    await expect(h.call("session.reload")).rejects.toMatchObject({ code: "busy" });
+
+    releaseDispatch();
+    await expect(managed).resolves.toMatchObject({ outcome: "accepted" });
+    // Accepted: the run is still active, so context mutations stay fenced but
+    // ordinary text-only steering is native Pi behavior again.
+    await expect(h.call("model.set", { model: { provider: "x", id: "y" } })).rejects.toMatchObject({
+      code: "busy",
+    });
+    h.primary.emit({ type: "agent_settled" });
+    await expect(h.call("prompt", { text: "ordinary" })).resolves.toBeTruthy();
+    await h.core.dispose();
+  });
+
+  it("does not install private transfer methods when no receiver is configured", async () => {
+    const h = harness();
+    await h.call("session.create");
+    await expect(h.call("attachments.transfer.begin", {})).rejects.toThrow(
+      /invalid private attachment transfer/,
+    );
+    await h.core.dispose();
+  });
+});
+
 describe("session core lifecycle", () => {
   it("creates a session and announces it", async () => {
     const { call, events, emitted, core } = harness();
@@ -286,6 +828,63 @@ describe("project trust gate", () => {
 });
 
 describe("session core conversation", () => {
+  it("validates attachment prompt requests and fails closed without a live host plan", async () => {
+    const { call, primary } = harness();
+    await call("session.create");
+    const request = {
+      version: 1,
+      transferId: "123e4567-e89b-42d3-a456-426614174011",
+      planId: "123e4567-e89b-42d3-a456-426614174000",
+      turnId: "123e4567-e89b-42d3-b456-426614174001",
+      attemptId: "123e4567-e89b-42d3-b456-426614174002",
+      text: "read this",
+    };
+    await expect(call("attachments.prompt", request)).resolves.toEqual({
+      outcome: "blocked",
+      reasons: ["stale_plan"],
+      turnId: request.turnId,
+      attemptId: request.attemptId,
+    });
+    await expect(call("attachments.prompt", { ...request, version: 2 })).rejects.toMatchObject({
+      code: "unsupported_version",
+    });
+    await expect(call("attachments.prompt", { ...request, path: "/secret" })).rejects.toMatchObject(
+      {
+        code: "bad_request",
+      },
+    );
+    expect(primary.prompts).toEqual([]);
+  });
+
+  it("rejects new references on legacy methods and validates old prompt images", async () => {
+    const { call, primary } = harness();
+    await call("session.create");
+    for (const method of ["prompt", "steer", "followUp"] as const) {
+      for (const key of ["attachments", "attachment", "attachmentDelivery", "attachmentPlan"]) {
+        await expect(call(method, { text: "hello", [key]: [] })).rejects.toMatchObject({
+          code: "bad_request",
+        });
+      }
+    }
+    for (const method of ["steer", "followUp"] as const) {
+      await expect(call(method, { text: "hello", images: [] })).rejects.toMatchObject({
+        code: "bad_request",
+      });
+    }
+    await expect(
+      call("prompt", {
+        text: "hello",
+        images: [{ type: "image", mimeType: "image/png", data: "abc" }],
+      }),
+    ).rejects.toMatchObject({ code: "bad_request" });
+    await expect(call("prompt", { text: "hello", image: {} })).rejects.toMatchObject({
+      code: "bad_request",
+    });
+    expect(primary.prompts).toEqual([]);
+    await call("prompt", { text: "ordinary text" });
+    expect(primary.prompts).toEqual(["ordinary text"]);
+  });
+
   it("forwards a prompt and mirrors SDK events as frames", async () => {
     const { call, events, primary } = harness();
     await call("session.create");
@@ -970,5 +1569,528 @@ describe("related sessions (orchestrator step 12)", () => {
         ),
       ).toBe(true),
     );
+  });
+});
+
+describe("private image preparation handlers", () => {
+  const IMAGE_ID = "123e4567-e89b-42d3-a456-426614174211";
+  const IMAGE_ORIGINAL = "123e4567-e89b-42d3-a456-426614174212";
+  const LIMITS = { maxWidth: 1568, maxHeight: 1568, maxEncodedBytes: 4 * 1024 * 1024 };
+
+  function imageHarness() {
+    const encode = vi.fn(
+      async (input: { bytes: Uint8Array; limits: { maxWidth: number; maxHeight: number } }) => ({
+        bytes: new Uint8Array(input.bytes),
+        mime: "image/png" as const,
+        original: {
+          mime: "image/png" as const,
+          width: input.limits.maxWidth,
+          height: input.limits.maxHeight,
+          encodedWidth: input.limits.maxWidth,
+          encodedHeight: input.limits.maxHeight,
+          orientation: 1,
+          animated: false,
+        },
+        width: input.limits.maxWidth,
+        height: input.limits.maxHeight,
+        wasResized: false,
+        wasReencoded: false,
+        warnings: [],
+        policy: { maxWidth: 1568, maxHeight: 1568, maxEncodedBytes: 4 * 1024 * 1024 },
+      }),
+    );
+    const h = harness({
+      createAttachmentImagePreparation: () =>
+        createAttachmentImagePreparationStore({
+          now: () => 1_000,
+          schedule: () => () => {},
+          sha256: (value) => createHash("sha256").update(value).digest("hex"),
+          encode,
+        }),
+    });
+    return { h, encode };
+  }
+
+  it("stages, prepares and streams one bounded original through the private handlers", async () => {
+    const { h, encode } = imageHarness();
+    await h.call("session.create");
+    const source = new TextEncoder().encode("bounded-image-bytes");
+    const digest = createHash("sha256").update(source).digest("hex");
+    await expect(
+      h.call("attachments.image.begin", {
+        id: IMAGE_ID,
+        originalId: IMAGE_ORIGINAL,
+        originalSha256: digest,
+        bytes: source.byteLength,
+        mime: "image/png",
+        expiresAt: 20_000,
+      }),
+    ).resolves.toEqual({ staged: true });
+    await expect(
+      h.call("attachments.image.chunk", {
+        id: IMAGE_ID,
+        offset: 0,
+        encoded: Buffer.from(source).toString("base64"),
+      }),
+    ).resolves.toEqual({ accepted: true });
+    const description = (await h.call("attachments.image.prepare", {
+      id: IMAGE_ID,
+      limits: LIMITS,
+    })) as Record<string, unknown>;
+    expect(description).toMatchObject({ sha256: digest, bytes: source.byteLength });
+    expect(encode).toHaveBeenCalled();
+    const read = (await h.call("attachments.image.read", {
+      id: IMAGE_ID,
+      part: "prepared",
+      offset: 0,
+      length: 4,
+    })) as { encoded: string };
+    expect(Buffer.from(read.encoded, "base64")).toEqual(Buffer.from(source.subarray(0, 4)));
+    await expect(h.call("attachments.image.cancel", { id: IMAGE_ID })).resolves.toEqual({
+      cancelled: true,
+    });
+    await expect(
+      h.call("attachments.image.read", { id: IMAGE_ID, part: "prepared", offset: 0, length: 1 }),
+    ).rejects.toThrow();
+  });
+
+  it("refuses preparation while the session is busy and still requires exact requests", async () => {
+    const { h } = imageHarness();
+    await h.call("session.create");
+    h.primary.state.streaming = true;
+    await expect(
+      h.call("attachments.image.begin", {
+        id: IMAGE_ID,
+        originalId: IMAGE_ORIGINAL,
+        originalSha256: "a".repeat(64),
+        bytes: 1,
+        mime: "image/png",
+        expiresAt: 20_000,
+      }),
+    ).rejects.toMatchObject({ code: "busy" });
+    h.primary.state.streaming = false;
+    await expect(
+      h.call("attachments.image.begin", {
+        id: IMAGE_ID,
+        originalId: IMAGE_ORIGINAL,
+        originalSha256: "a".repeat(64),
+        bytes: 1,
+        mime: "image/png",
+        expiresAt: 20_000,
+        extra: true,
+      } as never),
+    ).rejects.toThrow();
+    await expect(
+      h.call("attachments.image.read", { id: IMAGE_ID, part: "other", offset: 0, length: 1 }),
+    ).rejects.toThrow();
+  });
+});
+
+describe("private attachment readiness handler", () => {
+  const TEXT_ID = "123e4567-e89b-42d3-a456-426614174221";
+  const IMAGE_ID = "123e4567-e89b-42d3-a456-426614174222";
+  const PROFILE = "a".repeat(64);
+
+  function textFile(id = TEXT_ID) {
+    return {
+      id,
+      originalKind: "text",
+      originalBytes: 5,
+      modality: "text",
+      representationBytes: 5,
+      image: null,
+    };
+  }
+
+  async function readyHarness(modelInput: readonly string[] = ["text", "image"]) {
+    const h = harness();
+    await h.call("session.create");
+    h.primary.state.model = {
+      provider: "openai",
+      id: "fixture-model",
+      api: "openai-completions",
+      input: [...modelInput],
+      inputLimits: {
+        maxRequestBytes: 20_000_000,
+        images: {
+          maxPerMessage: 2,
+          maxPerRequest: 4,
+          resize: { maxBytes: 1_000_000, maxWidth: 1024, maxHeight: 1024 },
+        },
+      },
+    } as never;
+    h.primary.session.getContextUsage = () => ({ tokens: 100, contextWindow: 100_000 });
+    return h;
+  }
+
+  it("evaluates metadata-only files against the live model and context", async () => {
+    const h = await readyHarness();
+    const result = (await h.call("attachments.readiness", {
+      profileKey: PROFILE,
+      text: "look",
+      files: [textFile()],
+    })) as Record<string, unknown>;
+    expect(result).toMatchObject({
+      model: { provider: "openai", id: "fixture-model", api: "openai-completions" },
+      files: [{ id: TEXT_ID, reasons: [] }],
+      reasons: [],
+    });
+    expect(typeof result.revision).toBe("string");
+    expect(result.estimatedTokens).toBeGreaterThanOrEqual(0);
+  });
+
+  it("keeps busy aggregate-only and reports per-file model limits", async () => {
+    const h = await readyHarness(["text"]);
+    h.primary.state.streaming = true;
+    const busy = (await h.call("attachments.readiness", {
+      profileKey: PROFILE,
+      text: "look",
+      files: [textFile()],
+    })) as { reasons: string[]; files: Array<{ reasons: string[] }> };
+    expect(busy.reasons).toContain("busy");
+    expect(busy.files[0]?.reasons).not.toContain("busy");
+    h.primary.state.streaming = false;
+    const image = (await h.call("attachments.readiness", {
+      profileKey: PROFILE,
+      text: "look",
+      files: [
+        {
+          id: IMAGE_ID,
+          originalKind: "image",
+          originalBytes: 4000,
+          modality: "image",
+          representationBytes: 4000,
+          image: { width: 10, height: 10 },
+        },
+      ],
+    })) as { reasons: string[]; files: Array<{ reasons: string[] }> };
+    expect(image.reasons).toContain("model_modality_unsupported");
+    expect(image.files[0]?.reasons).toContain("model_modality_unsupported");
+  });
+
+  it("rejects malformed, duplicated and out-of-range requests", async () => {
+    const h = await readyHarness();
+    await expect(
+      h.call("attachments.readiness", {
+        profileKey: PROFILE,
+        text: "look",
+        files: [textFile(), textFile()],
+      }),
+    ).rejects.toThrow();
+    await expect(
+      h.call("attachments.readiness", {
+        profileKey: "not-a-digest",
+        text: "look",
+        files: [textFile()],
+      }),
+    ).rejects.toThrow();
+    await expect(
+      h.call("attachments.readiness", {
+        profileKey: PROFILE,
+        text: "look",
+        files: [{ ...textFile(), image: { width: 0, height: 10 } }],
+      }),
+    ).rejects.toThrow();
+    await expect(
+      h.call("attachments.readiness", {
+        profileKey: PROFILE,
+        text: "look",
+        files: [{ ...textFile(), originalBytes: -1 }],
+      }),
+    ).rejects.toThrow();
+    await expect(
+      h.call("attachments.readiness", { profileKey: PROFILE, text: "look", files: [] }),
+    ).rejects.toThrow();
+  });
+});
+
+describe("attachment protocol support", () => {
+  it("advertises support only when every required attachment port is wired", () => {
+    const complete = harness({
+      createAttachmentTransferStore: (current) =>
+        createAttachmentTransferStore({
+          now: () => 1_000,
+          current,
+          sha256: (value) => createHash("sha256").update(value).digest("hex"),
+          schedule: () => () => {},
+        }),
+      createAttachmentImagePreparation: () =>
+        createAttachmentImagePreparationStore({
+          now: () => 1_000,
+          schedule: () => () => {},
+          sha256: (value) => createHash("sha256").update(value).digest("hex"),
+          encode: async ({ bytes, limits }) => ({
+            bytes: new Uint8Array(bytes),
+            mime: "image/png",
+            original: {
+              mime: "image/png",
+              width: limits.maxWidth,
+              height: limits.maxHeight,
+              encodedWidth: limits.maxWidth,
+              encodedHeight: limits.maxHeight,
+              orientation: 1,
+              animated: false,
+            },
+            width: limits.maxWidth,
+            height: limits.maxHeight,
+            wasResized: false,
+            wasReencoded: false,
+            warnings: [],
+            policy: limits,
+          }),
+        }),
+      dispatchAttachmentPrompt: async () => ({
+        outcome: "blocked",
+        reasons: ["unavailable"],
+        turnId: RACE_IDS.turnId,
+        attemptId: RACE_IDS.attemptId,
+      }),
+      listAttachmentSubmissions: () => [],
+    });
+    expect(complete.core.attachmentDeliverySupport()).toBe(1);
+
+    const missing = harness();
+    expect(missing.core.attachmentDeliverySupport()).toBeNull();
+
+    const partial = harness({ listAttachmentSubmissions: () => [] });
+    expect(partial.core.attachmentDeliverySupport()).toBeNull();
+  });
+});
+
+describe("Desktop model/context route policy", () => {
+  const textModel = {
+    provider: "openai",
+    id: "text-only",
+    api: "openai-completions",
+    input: ["text"],
+    inputLimits: {
+      maxRequestBytes: 20_000_000,
+      images: {
+        maxPerMessage: 0,
+        maxPerRequest: 0,
+        resize: { maxBytes: 0, maxWidth: 0, maxHeight: 0 },
+      },
+    },
+  };
+  const visionModel = {
+    provider: "openai",
+    id: "vision",
+    api: "openai-completions",
+    input: ["text", "image"],
+    inputLimits: {
+      maxRequestBytes: 20_000_000,
+      images: {
+        maxPerMessage: 4,
+        maxPerRequest: 8,
+        resize: { maxBytes: 4 * 1024 * 1024, maxWidth: 2048, maxHeight: 2048 },
+      },
+    },
+  };
+  const imageHistory = () => [
+    { role: "user", content: [{ type: "image", mimeType: "image/png", data: "AAAA" }] },
+  ];
+
+  it("blocks an ordinary prompt when image history meets a text-only model", async () => {
+    const h = harness();
+    await h.call("session.create");
+    h.primary.state.model = textModel as never;
+    h.primary.state.messages = imageHistory();
+    await expect(h.call("prompt", { text: "hello" })).rejects.toMatchObject({
+      code: "model_modality_unsupported",
+    });
+    expect(h.primary.prompts).toHaveLength(0);
+
+    h.primary.state.model = visionModel as never;
+    await expect(h.call("prompt", { text: "hello" })).resolves.toBeTruthy();
+    expect(h.primary.prompts).toHaveLength(1);
+  });
+
+  it("blocks steer and follow-up on the same rule", async () => {
+    const h = harness();
+    await h.call("session.create");
+    h.primary.state.model = textModel as never;
+    h.primary.state.messages = imageHistory();
+    await expect(h.call("steer", { text: "go on" })).rejects.toMatchObject({
+      code: "model_modality_unsupported",
+    });
+    await expect(h.call("followUp", { text: "and then" })).rejects.toMatchObject({
+      code: "model_modality_unsupported",
+    });
+  });
+
+  it("allows an idle model switch but refuses an incompatible target mid-run", async () => {
+    const h = harness();
+    await h.call("session.create");
+    h.primary.state.model = visionModel as never;
+    h.primary.state.messages = imageHistory();
+    await expect(h.call("model.set", { model: textModel })).resolves.toBeTruthy();
+
+    h.primary.state.streaming = true;
+    await expect(h.call("model.set", { model: textModel })).rejects.toMatchObject({
+      code: "model_modality_unsupported",
+    });
+  });
+
+  it("refuses cycling models during an active image run", async () => {
+    const h = harness();
+    await h.call("session.create");
+    h.primary.state.model = visionModel as never;
+    h.primary.state.messages = imageHistory();
+    h.primary.state.streaming = true;
+    await expect(h.call("model.cycle", { direction: "forward" })).rejects.toMatchObject({
+      code: "busy",
+    });
+  });
+});
+
+describe("attachment transcript chain", () => {
+  const turnId = "123e4567-e89b-42d3-a456-426614174201";
+  const attemptId = "123e4567-e89b-42d3-a456-426614174202";
+  const planId = "123e4567-e89b-42d3-a456-426614174203";
+  const draftId = "123e4567-e89b-42d3-a456-426614174204";
+  const originalId = "123e4567-e89b-42d3-a456-426614174205";
+  const representationId = "123e4567-e89b-42d3-a456-426614174206";
+  const associationEntryId = "association-entry-1";
+  const digest = "a".repeat(64);
+  const scope: AttachmentDeliveryScope = {
+    authorityId: "123e4567-e89b-42d3-a456-426614174207",
+    leaseId: "123e4567-e89b-42d3-a456-426614174208",
+    profileKey: "b".repeat(64),
+    tabId: "tab-1",
+    draftId,
+    hostGeneration: 1,
+    processGeneration: 1,
+    sessionId: "session-1",
+    sessionEpoch: 1,
+    branchId: null,
+    revision: "revision-1",
+  };
+
+  function chain() {
+    const body = "managed text body";
+    const text = `Summarize this\n\n${renderAttachmentTextSections([
+      { id: originalId, name: "notes.txt", representationSha256: digest, text: body },
+    ])}`;
+    const message = { role: "user", content: [{ type: "text", text }] };
+    const entries: Array<Record<string, unknown>> = [
+      { type: "message", id: "user-entry-1", message },
+    ];
+    const sessionManager = {
+      getEntries: () => [...entries],
+      getBranch: () => [...entries],
+      getEntryCount: () => entries.length,
+      getSessionId: () => scope.sessionId,
+      isPersisted: () => entries.some((entry) => entry.type === "message"),
+      appendCustomEntry: (customType: string, data: unknown) => {
+        entries.push({ type: "custom", id: associationEntryId, customType, data });
+        return associationEntryId;
+      },
+    };
+    const session = { sessionManager } as unknown as Parameters<
+      typeof appendAttachmentSubmissionAssociation
+    >[0];
+    const asset = {
+      original: {
+        id: originalId,
+        name: "notes.txt",
+        kind: "text" as const,
+        bytes: 18,
+        sha256: digest,
+      },
+      representation: {
+        id: representationId,
+        attachmentId: originalId,
+        modality: "text" as const,
+        origin: "direct" as const,
+        bytes: 18,
+        originalSha256: digest,
+        representationSha256: digest,
+        preparationVersion: "direct-v1",
+        approved: true,
+        warnings: [],
+      },
+      image: null,
+      approvalDigest: null,
+    };
+    const association = appendAttachmentSubmissionAssociation(session, {
+      planId,
+      turnId,
+      attemptId,
+      sourceTextSha256: digest,
+      scope,
+      text,
+      images: [],
+      assets: [asset],
+      userEntryId: "user-entry-1",
+      createdAt: 1_000,
+    });
+    return { message, entries, session, association };
+  }
+
+  it("appends, reloads and projects the exact persisted turn as a card", async () => {
+    const fixture = chain();
+    expect(fixture.association).not.toBeNull();
+    const reloaded = readAttachmentSubmissionHistory(fixture.session);
+    expect(reloaded).toHaveLength(1);
+    expect(reloaded[0]?.association.metadata.turnId).toBe(turnId);
+
+    const h = harness({
+      listAttachmentSubmissionHistory: () => readAttachmentSubmissionHistory(fixture.session),
+    });
+    await h.call("session.create");
+    h.primary.state.messages = [fixture.message];
+
+    const projected = (await h.call("messages.get", {})) as {
+      messages: Array<Record<string, unknown>>;
+    };
+    expect(projected.messages).toHaveLength(1);
+    expect(projected.messages[0]?.id).toBe("user-entry-1");
+    expect(projected.messages[0]?.desktopAttachmentCard).toEqual(
+      attachmentTranscriptCard(fixture.association!),
+    );
+
+    const looked = (await h.call("messages.get", { attachmentTurnId: turnId })) as {
+      attachmentCard: unknown;
+    };
+    expect(looked.attachmentCard).toEqual(attachmentTranscriptCard(fixture.association!));
+    await expect(
+      h.call("messages.get", { attachmentTurnId: turnId, extra: true } as never),
+    ).rejects.toMatchObject({ code: "bad_request" });
+  });
+
+  it("never attributes an ambiguous duplicate message reference", async () => {
+    const fixture = chain();
+    const h = harness({
+      listAttachmentSubmissionHistory: () => readAttachmentSubmissionHistory(fixture.session),
+    });
+    await h.call("session.create");
+    h.primary.state.messages = [fixture.message, fixture.message];
+
+    const projected = (await h.call("messages.get", {})) as {
+      messages: Array<Record<string, unknown>>;
+    };
+    expect(projected.messages).toHaveLength(2);
+    expect(projected.messages.every((item) => item.desktopAttachmentCard === undefined)).toBe(true);
+  });
+
+  it("degrades to ordinary history when a stored association is invalid", async () => {
+    const fixture = chain();
+    const associationEntry = fixture.entries.find((entry) => entry.id === associationEntryId);
+    expect(associationEntry).toBeDefined();
+    associationEntry!.data = {
+      ...(associationEntry!.data as Record<string, unknown>),
+      turnId: "nope",
+    };
+    const h = harness({
+      listAttachmentSubmissionHistory: () => readAttachmentSubmissionHistory(fixture.session),
+    });
+    await h.call("session.create");
+    h.primary.state.messages = [fixture.message];
+
+    const projected = (await h.call("messages.get", {})) as {
+      messages: Array<Record<string, unknown>>;
+    };
+    expect(projected.messages[0]?.desktopAttachmentCard).toBeUndefined();
+    expect(projected.messages[0]?.id).toBeUndefined();
   });
 });

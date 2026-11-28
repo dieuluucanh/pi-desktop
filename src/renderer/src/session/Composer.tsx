@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Paperclip, Send, Square, X } from "lucide-react";
+import { AttachmentTray } from "../attachments/AttachmentTray";
+import type { AttachmentDraftState } from "../attachments/controller";
+import type { AttachmentPreview } from "../../../shared/attachments";
 import { Button } from "../ui/button";
 import { cn } from "../ui/cn";
 import { PROMPT_MAX_HEIGHT_PX, useAutoGrowTextarea } from "../ui/auto-grow";
@@ -90,6 +93,21 @@ export interface ComposerProps {
     images: readonly ImageAttachment[],
     options?: { preferredSource?: CompletionSource; followUp?: boolean },
   ) => Promise<ComposerSendDisposition>;
+  /** Main-owned attachment draft. Omit only for legacy standalone/test composers. */
+  attachmentState?: AttachmentDraftState;
+  /** Host reports idle and no review/compaction/retry is active. */
+  attachmentReady?: boolean;
+  /** The non-submitting readiness verdict is missing or blocked for shown files. */
+  attachmentReadinessBlocked?: boolean;
+  onAttachmentFiles?: (files: readonly File[]) => Promise<void>;
+  onPickAttachments?: () => Promise<void>;
+  onRemoveAttachment?: (id: string) => Promise<void>;
+  onPreviewAttachment?: (id: string) => Promise<AttachmentPreview | null>;
+  onDismissAttachmentIssue?: (index: number) => void;
+  onDismissAttachmentImport?: (operationId: number) => void;
+  onRetryAttachmentDelivery?: () => Promise<boolean>;
+  /** Explicitly discard an unresolved attempt and start a clean draft. */
+  onResetAttachmentDraft?: () => Promise<boolean>;
   onStop: () => void;
   /**
    * Escape while a run is streaming (plan step 23). Terminal Pi gives the key
@@ -365,6 +383,17 @@ export function Composer({
   onMentionHandled,
   onDraftChange,
   onSend,
+  attachmentState,
+  attachmentReady = true,
+  attachmentReadinessBlocked = false,
+  onAttachmentFiles,
+  onPickAttachments,
+  onRemoveAttachment,
+  onPreviewAttachment,
+  onDismissAttachmentIssue,
+  onDismissAttachmentImport,
+  onRetryAttachmentDelivery,
+  onResetAttachmentDraft,
   onStop,
   onEscape,
   escapeActive = false,
@@ -612,14 +641,31 @@ export function Composer({
    * read the `draft` prop or `pickedSource` state: both are stale while a
    * remote apply is awaited, and sending the old text would lose the fill.
    */
+  const managedAttachmentBlocked = Boolean(
+    attachmentState &&
+    (attachmentState.phase !== "ready" ||
+      (attachmentState.descriptors.length > 0 &&
+        (!attachmentReady || attachmentReadinessBlocked || running)) ||
+      attachmentState.imports.length > 0 ||
+      attachmentState.issues.length > 0 ||
+      attachmentState.submission.phase === "submitting" ||
+      attachmentState.submission.phase === "uncertain" ||
+      attachmentState.submission.phase === "review_required"),
+  );
+
   const submitText = useCallback(
     async (
       text: string,
       source?: CompletionSource,
       followUp?: boolean,
     ): Promise<ComposerSendDisposition> => {
-      if (!enabled || busy) return "refused";
-      if (text.trim().length === 0 && attachments.length === 0) return "refused";
+      if (!enabled || busy || managedAttachmentBlocked) return "refused";
+      if (
+        text.trim().length === 0 &&
+        attachments.length === 0 &&
+        (attachmentState?.descriptors.length ?? 0) === 0
+      )
+        return "refused";
       setBusy(true);
       try {
         const disposition = await onSend(text, attachments, {
@@ -639,7 +685,17 @@ export function Composer({
         setBusy(false);
       }
     },
-    [attachments, busy, clearDraftImages, closeCompletion, enabled, onSend, tabId],
+    [
+      attachmentState?.descriptors.length,
+      attachments,
+      busy,
+      clearDraftImages,
+      closeCompletion,
+      enabled,
+      managedAttachmentBlocked,
+      onSend,
+      tabId,
+    ],
   );
 
   const submit = useCallback(async (): Promise<ComposerSendDisposition> => {
@@ -648,6 +704,11 @@ export function Composer({
 
   const addFiles = useCallback(
     async (files: readonly File[]) => {
+      if (files.length === 0) return;
+      if (onAttachmentFiles) {
+        await onAttachmentFiles(files);
+        return;
+      }
       const images = files.filter((file) => isImageFile(file));
       if (images.length === 0) return;
       const added: ImageAttachment[] = [];
@@ -657,7 +718,7 @@ export function Composer({
       }
       if (added.length > 0) addDraftImages(tabId, added);
     },
-    [addDraftImages, tabId],
+    [addDraftImages, onAttachmentFiles, tabId],
   );
 
   const insertMention = useCallback(
@@ -749,7 +810,19 @@ export function Composer({
       {queued.length > 0 ? (
         <PendingQueue queue={queue} onRestore={onRestoreQueue} onClear={onClearQueue} />
       ) : null}
-      {attachments.length > 0 ? (
+      {attachmentState ? (
+        <AttachmentTray
+          state={attachmentState}
+          onPick={() => void onPickAttachments?.()}
+          onRemove={(id) => void onRemoveAttachment?.(id)}
+          onPreview={(id) => onPreviewAttachment?.(id) ?? Promise.resolve(null)}
+          onDismissIssue={(index) => onDismissAttachmentIssue?.(index)}
+          onDismissImport={(operationId) => onDismissAttachmentImport?.(operationId)}
+          onRetryDelivery={() => void onRetryAttachmentDelivery?.()}
+          onResetDraft={onResetAttachmentDraft ? () => void onResetAttachmentDraft() : undefined}
+          sendReady={attachmentReady && !running}
+        />
+      ) : attachments.length > 0 ? (
         <AttachmentChips attachments={attachments} onRemove={(id) => removeDraftImage(tabId, id)} />
       ) : null}
 
@@ -771,6 +844,10 @@ export function Composer({
             aria-label="Prompt"
             rows={2}
             value={draft}
+            readOnly={
+              attachmentState?.submission.phase === "submitting" ||
+              attachmentState?.submission.phase === "uncertain"
+            }
             placeholder={
               bashMode
                 ? "Shell command — runs in this folder; !! keeps output out of model context…"
@@ -825,12 +902,19 @@ export function Composer({
             onPaste={(event) => {
               // Image/file paste keeps the attachment path; only text collapses.
               const files = [...(event.clipboardData?.files ?? [])];
+              const text =
+                typeof event.clipboardData?.getData === "function"
+                  ? event.clipboardData.getData("text/plain")
+                  : "";
               if (files.length > 0) {
                 void addFiles(files);
+                // Preserve ordinary clipboard text alongside file items. Large text
+                // still uses the bounded paste-marker path instead of creating a
+                // second large renderer buffer.
+                if (!shouldCollapsePaste(text)) return;
+              } else if (!shouldCollapsePaste(text)) {
                 return;
               }
-              const text = event.clipboardData?.getData("text/plain") ?? "";
-              if (!shouldCollapsePaste(text)) return;
               event.preventDefault();
               const marker = registerPaste(tabId, text);
               const node = event.currentTarget;
@@ -1082,9 +1166,22 @@ export function Composer({
               variant="primary"
               aria-label="Send"
               className="shrink-0"
-              disabled={!enabled || busy}
+              disabled={!enabled || busy || managedAttachmentBlocked}
               onClick={() => void submit()}
-              title={running ? "Enter steers · Alt+Enter queues a follow-up" : "Enter"}
+              title={
+                managedAttachmentBlocked
+                  ? attachmentState?.submission.phase === "uncertain"
+                    ? "Delivery is uncertain; use the explicit retry action in the attachment tray."
+                    : attachmentState?.descriptors.length &&
+                        (!attachmentReady || attachmentReadinessBlocked || running)
+                      ? attachmentReadinessBlocked
+                        ? "Resolve the attachment readiness issue before sending."
+                        : "Files can only be sent when the host is idle; they are never queued."
+                      : "Wait for attachment import or resolve its blocking issue before sending."
+                  : running && (attachmentState?.descriptors.length ?? 0) === 0
+                    ? "Enter steers · Alt+Enter queues a follow-up"
+                    : "Enter"
+              }
             >
               <Send className="size-4" aria-hidden />
             </Button>
@@ -1104,16 +1201,19 @@ export function Composer({
               size="icon-md"
               variant="ghost"
               className="shrink-0"
-              aria-label="Attach image"
-              title="Attach image"
-              onClick={() => fileInputRef.current?.click()}
+              aria-label={attachmentState ? "Attach files" : "Attach image"}
+              title={attachmentState ? "Attach files" : "Attach image"}
+              onClick={() => {
+                if (onPickAttachments) void onPickAttachments();
+                else fileInputRef.current?.click();
+              }}
             >
               <Paperclip className="size-4" aria-hidden />
             </Button>
             <input
               ref={fileInputRef}
               type="file"
-              accept="image/*"
+              accept={attachmentState ? undefined : "image/*"}
               multiple
               className="hidden"
               data-testid="composer-attach-input"

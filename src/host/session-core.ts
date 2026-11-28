@@ -1,5 +1,47 @@
 import type { HostMethod } from "../shared/host-protocol";
+import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
+import {
+  ATTACHMENT_DELIVERY_VERSION,
+  ATTACHMENT_LIMITS,
+  attachmentTranscriptCard,
+  isAttachmentId,
+  isWellFormedAttachmentText,
+  validateAttachmentPromptRequest,
+  type AttachmentAttemptId,
+  type AttachmentDeliveryPlan,
+  type AttachmentDeliveryScope,
+  type AttachmentPlanId,
+  type AttachmentModelIdentity,
+  type AttachmentPromptResult,
+  type AttachmentSubmissionAssociation,
+  type AttachmentTranscriptCard,
+  type AttachmentTurnId,
+  type AuthorizedAttachmentAsset,
+} from "../shared/attachments";
+import {
+  createAttachmentPlanInput,
+  createAttachmentReadinessPolicyContext,
+  estimateAttachmentHistory,
+} from "./attachment-context";
+import { evaluateModelChange, evaluatePromptRoute } from "./prompt-route-policy";
+import { createAttachmentDispatchCoordinator } from "./attachment-dispatch";
+import {
+  createAttachmentPlanner,
+  evaluateAttachmentPolicy,
+  type AttachmentPlanInput,
+  type AttachmentPolicyAsset,
+} from "./attachment-plan";
+import { validateLegacyImages } from "./legacy-image-compat";
+import {
+  materializeAttachmentPrompt,
+  type MaterializedAttachmentPrompt,
+} from "./attachment-materialize";
+import type { AttachmentTransferReader, AttachmentTransferStore } from "./attachment-transfer";
+import type {
+  AttachmentImagePreparationStore,
+  PreparationPart,
+} from "./attachment-image-preparation";
 import {
   KEYBINDING_DEFINITIONS,
   resolveKeybindings as resolveEffectiveKeybindings,
@@ -270,6 +312,22 @@ export interface BashPort {
   ): Promise<BashRunOutcome>;
 }
 
+export interface AttachmentDispatchPortInput {
+  readonly session: HostSession;
+  readonly turnId: AttachmentTurnId;
+  readonly attemptId: AttachmentAttemptId;
+  readonly planId: AttachmentPlanId;
+  readonly sourceTextSha256: string;
+  readonly scope: AttachmentDeliveryScope;
+  readonly assets: readonly AuthorizedAttachmentAsset[];
+  readonly expectedModel: AttachmentModelIdentity;
+  readonly text: string;
+  readonly images: MaterializedAttachmentPrompt["images"];
+  revalidate(): Promise<boolean>;
+  isCurrent(): boolean;
+  onLateFailure?(): void;
+}
+
 export interface RuntimeLike {
   get session(): HostSession;
   get services(): { settingsManager?: SettingsLike; cwd?: string };
@@ -375,6 +433,12 @@ export interface ComposerTransformFactoryOptions {
   emit(event: string, payload?: unknown, sessionId?: string): void;
   onError(error: unknown): void;
   log(line: string): void;
+}
+
+interface AttachmentSubmissionTranscriptRecord {
+  readonly association: AttachmentSubmissionAssociation;
+  /** Exact message object from its persisted SessionManager entry. */
+  readonly message: unknown;
 }
 
 export interface SessionCoreDeps {
@@ -520,6 +584,25 @@ export interface SessionCoreDeps {
   readChangelog?(): Promise<{ path: string; text: string | null }>;
   emit(event: string, payload?: unknown, sessionId?: string): void;
   now?: () => number;
+  /** Creates the private bounded receiver with a live session/idle fence. */
+  createAttachmentTransferStore?(
+    current: (scope: AttachmentDeliveryScope) => boolean,
+  ): AttachmentTransferStore;
+  /**
+   * Purpose-scoped original-image preparation receiver (plan step 6). It only
+   * decodes/resizes an owner-checked original and hands prepared bytes back to
+   * main; it creates no delivery representation and grants no renderer access.
+   */
+  createAttachmentImagePreparation?(): AttachmentImagePreparationStore;
+  /** Public SDK adapter, injected from `src/host/sdk/attachments.ts`. */
+  dispatchAttachmentPrompt?(input: AttachmentDispatchPortInput): Promise<AttachmentPromptResult>;
+  /** SessionManager-backed attachment records, injected from `src/host/sdk/*`. */
+  listAttachmentSubmissions?(session: HostSession): readonly AttachmentSubmissionAssociation[];
+  /** Branch-scoped association plus its exact persisted message reference. */
+  listAttachmentSubmissionHistory?(
+    session: HostSession,
+  ): readonly AttachmentSubmissionTranscriptRecord[];
+  newAttachmentId?(): string;
 }
 
 export interface SessionCore {
@@ -528,6 +611,12 @@ export interface SessionCore {
   session(): HostSession | null;
   /** Current session identity for event fencing (id + attachment epoch). */
   identity(): { sessionId: string | null; epoch: number };
+  /**
+   * Attachment protocol version this core actually supports, or null when a
+   * required port/handler is missing (plan step 8). The greeting must reflect
+   * this rather than a hard-coded value, and the release gate stays separate.
+   */
+  attachmentDeliverySupport(): number | null;
   /**
    * Phase breakdown of the last `session.create`/`session.resume` in this
    * process, or null before the first (2026-11-07 plan). Optional: the control
@@ -551,12 +640,42 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
 }
 
+/** Never discard file references; only prompt has the bounded legacy image adapter. */
+function rejectAttachmentFields(input: Record<string, unknown>, allowLegacyImages = false): void {
+  const imageFields = allowLegacyImages ? ["image"] : ["images", "image"];
+  const forbidden = [
+    "attachments",
+    "attachment",
+    "attachmentDelivery",
+    "attachmentPlan",
+    ...imageFields,
+  ];
+  if (forbidden.some((key) => Object.prototype.hasOwnProperty.call(input, key))) {
+    throw new SessionCoreError(
+      "file references require the authorized attachment delivery flow",
+      "bad_request",
+    );
+  }
+}
+
 function requireString(value: unknown, field: string): string {
   if (typeof value !== "string" || value.length === 0) {
     throw new SessionCoreError(`${field} must be a non-empty string`, "bad_request");
   }
   return value;
 }
+
+const ATTACHMENT_ORIGINAL_KINDS = [
+  "text",
+  "image",
+  "pdf",
+  "word",
+  "spreadsheet",
+  "presentation",
+  "audio",
+  "video",
+  "other",
+] as const;
 
 export function createSessionCore(deps: SessionCoreDeps): SessionCore {
   const trust: ProjectTrust = createProjectTrust({
@@ -986,6 +1105,36 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
   } | null = null;
   let lastOpen: HostOpenTimings | null = null;
   const clock = (): number => deps.now?.() ?? Date.now();
+  let attachmentContextRevision = 0;
+  const attachmentDispatch = createAttachmentDispatchCoordinator();
+  const transferContextRevisions = new Map<string, number>();
+  const currentAttachmentBranch = (): string | null | undefined => {
+    try {
+      const leaf = manager?.getLeafId?.();
+      return typeof leaf === "string" && leaf.length > 0 ? leaf : null;
+    } catch {
+      return undefined;
+    }
+  };
+  const currentAttachmentRevision = (): string => `${sessionEpoch}:${attachmentContextRevision}`;
+  const transferReaders = new Map<string, AttachmentTransferReader>();
+  const plansByTransfer = new Map<string, AttachmentDeliveryPlan>();
+  const attachmentPlanner = createAttachmentPlanner({
+    newId: deps.newAttachmentId ?? randomUUID,
+    now: clock,
+    sha256: (value) => createHash("sha256").update(value).digest("hex"),
+  });
+  const attachmentTransfer =
+    deps.createAttachmentTransferStore?.(
+      (scope) =>
+        session !== null &&
+        session.sessionId === scope.sessionId &&
+        sessionEpoch === scope.sessionEpoch &&
+        currentAttachmentBranch() === scope.branchId &&
+        currentAttachmentRevision() === scope.revision &&
+        transferContextRevisions.get(scope.leaseId) === attachmentContextRevision,
+    ) ?? null;
+  const imagePreparation = deps.createAttachmentImagePreparation?.() ?? null;
   const beginOpen = (): void => {
     activeOpen = {
       startedAt: clock(),
@@ -1315,6 +1464,26 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
     return { ...event, queueOrigins: queueOrigins.classify(steering, followUp) };
   };
 
+  const withAttachmentTurn = (event: {
+    type: string;
+    [key: string]: unknown;
+  }): { type: string; [key: string]: unknown } => {
+    const turn = attachmentDispatch.current();
+    if (
+      turn === null ||
+      (event.type !== "message_start" && event.type !== "message_end") ||
+      asRecord(event.message).role !== "user"
+    )
+      return event;
+    // Only the initiating user entry of the fenced turn carries metadata; later
+    // steering/follow-up messages are separate turns and must not inherit it.
+    return {
+      ...event,
+      attachmentTurnId: turn.turnId,
+      attachmentAttemptId: turn.attemptId,
+    };
+  };
+
   const attach = (next: HostSession): void => {
     unsubscribe?.();
     unsubscribeErrors?.();
@@ -1323,6 +1492,13 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
     queueOrigins.reset();
     session = next;
     sessionEpoch += 1;
+    attachmentContextRevision += 1;
+    attachmentDispatch.settle();
+    for (const id of transferContextRevisions.keys()) attachmentTransfer?.cancel(id);
+    for (const reader of transferReaders.values()) reader.close();
+    transferContextRevisions.clear();
+    transferReaders.clear();
+    plansByTransfer.clear();
     // The Extensions hub reads this list; errors from the outgoing runner must
     // not be attributed to the replacement session.
     runtimeErrors.length = 0;
@@ -1335,9 +1511,14 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
       unsubscribeModelChanges = null;
     }
     const listener = (event: { type: string; [key: string]: unknown }): void => {
+      if (!attachmentDispatch.blocksConcurrentWork()) attachmentContextRevision += 1;
+      if (event.type === "agent_settled" && attachmentDispatch.blocksConcurrentWork()) {
+        attachmentDispatch.settle();
+        attachmentContextRevision += 1;
+      }
       const enriched = withQueueOrigins(
         next,
-        withPromptOrigin(withEntryRenderability(next, event)),
+        withPromptOrigin(withEntryRenderability(next, withAttachmentTurn(event))),
       );
       const frame = eventToFrame(enriched);
       deps.emit(frame.event, frame.payload, next.sessionId ?? undefined);
@@ -1396,6 +1577,19 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
    * wait for the first and observe its snapshot, instead of replacing again.
    */
   let sessionTransition: Promise<void> = Promise.resolve();
+  /** A dispatch is awaiting preflight; a second send/staging must not start. */
+  const requireNoPendingAttachmentDispatch = (): void => {
+    if (attachmentDispatch.blocksConcurrentWork()) {
+      throw new SessionCoreError("an attachment turn is being dispatched", "busy");
+    }
+  };
+  /** Model/settings/session/context mutations wait for the attachment turn. */
+  const requireNoAttachmentContextMutation = (): void => {
+    if (attachmentDispatch.blocksContextMutation()) {
+      throw new SessionCoreError("an attachment turn is active; wait for it to settle", "busy");
+    }
+  };
+
   const serializeSessionTransition = <T>(run: () => Promise<T>): Promise<T> => {
     const next = sessionTransition.then(run, run);
     sessionTransition = next.then(
@@ -1404,7 +1598,6 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
     );
     return next;
   };
-
   const snapshot = (): SessionSnapshot => {
     if (!session) {
       return {
@@ -1441,6 +1634,29 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
     if (!session)
       throw new SessionCoreError("no session is open; call session.create first", "no_session");
     return session;
+  };
+
+  const makeAttachmentPlanInput = (
+    current: HostSession,
+    reader: AttachmentTransferReader,
+    text: string,
+  ): AttachmentPlanInput | null => {
+    const revision = transferContextRevisions.get(reader.id);
+    if (revision === undefined) return null;
+    const usage = current.getContextUsage?.();
+    return createAttachmentPlanInput({
+      scope: reader.scope,
+      model: current.model,
+      idle: current.isIdle === true,
+      messages: Array.isArray(current.messages) ? current.messages : null,
+      contextTokens: typeof usage?.tokens === "number" ? usage.tokens : null,
+      contextWindow: typeof usage?.contextWindow === "number" ? usage.contextWindow : null,
+      assets: reader.assets,
+      text,
+      // Prompt templates are disabled for this adapter; slash invocations are
+      // conservatively blocked rather than guessed from renderer command state.
+      registeredCommand: text.trimStart().startsWith("/"),
+    });
   };
 
   const startSession = async (options: {
@@ -1643,10 +1859,574 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
       return { name, sessionFile: manager.getSessionFile?.() ?? session?.sessionFile ?? null };
     },
 
-    prompt: async (params) => {
+    // Parent-only private transport; the renderer-facing session.request route
+    // rejects these methods before they reach a host.
+    "attachments.context": () => {
+      const current = ensure();
+      const branchId = currentAttachmentBranch();
+      if (current.isIdle !== true || attachmentDispatch.blocksConcurrentWork()) {
+        throw new SessionCoreError("attachment context is busy", "busy");
+      }
+      if (branchId === undefined) {
+        throw new SessionCoreError("attachment context is unavailable", "unavailable");
+      }
+      return {
+        sessionId: current.sessionId,
+        sessionEpoch,
+        branchId,
+        revision: currentAttachmentRevision(),
+      };
+    },
+    "attachments.transfer.begin": (params) => {
       const current = ensure();
       const input = asRecord(params);
-      const text = requireString(input.text, "text");
+      if (
+        !attachmentTransfer ||
+        Object.keys(input).length !== 4 ||
+        !Object.keys(input).every((key) => ["id", "scope", "expiresAt", "assets"].includes(key)) ||
+        !input.scope ||
+        typeof input.scope !== "object"
+      ) {
+        throw new SessionCoreError("invalid private attachment transfer", "bad_request");
+      }
+      const scope = input.scope as AttachmentDeliveryScope;
+      const branchId = currentAttachmentBranch();
+      if (
+        current.isIdle !== true ||
+        attachmentDispatch.blocksConcurrentWork() ||
+        scope.sessionId !== current.sessionId ||
+        scope.sessionEpoch !== sessionEpoch ||
+        branchId === undefined ||
+        scope.branchId !== branchId ||
+        scope.revision !== currentAttachmentRevision()
+      ) {
+        throw new SessionCoreError("attachment transfer is stale", "stale_plan");
+      }
+      const transferId = input.id;
+      if (
+        typeof transferId !== "string" ||
+        !isAttachmentId(transferId) ||
+        scope.leaseId !== transferId
+      ) {
+        throw new SessionCoreError("invalid private attachment transfer", "bad_request");
+      }
+      for (const [id, reader] of transferReaders) {
+        if (reader.isCurrent()) continue;
+        reader.close();
+        transferReaders.delete(id);
+        plansByTransfer.delete(id);
+        transferContextRevisions.delete(id);
+      }
+      transferContextRevisions.set(transferId, attachmentContextRevision);
+      try {
+        attachmentTransfer.begin({
+          id: transferId,
+          scope,
+          expiresAt: input.expiresAt as number,
+          assets: input.assets as AuthorizedAttachmentAsset[],
+        });
+      } catch {
+        transferContextRevisions.delete(transferId);
+        throw new SessionCoreError("attachment transfer is unavailable", "unavailable");
+      }
+      return { staged: true };
+    },
+    "attachments.transfer.chunk": (params) => {
+      const current = ensure();
+      if (current.isIdle !== true || attachmentDispatch.blocksConcurrentWork()) {
+        throw new SessionCoreError("attachment transfer is unavailable", "unavailable");
+      }
+      const input = asRecord(params);
+      if (
+        !attachmentTransfer ||
+        Object.keys(input).length !== 4 ||
+        !Object.keys(input).every((key) =>
+          ["id", "representationId", "offset", "encoded"].includes(key),
+        )
+      ) {
+        throw new SessionCoreError("invalid private attachment chunk", "bad_request");
+      }
+      try {
+        attachmentTransfer.chunk(
+          input.id as string,
+          input.representationId as string,
+          input.offset as number,
+          input.encoded as string,
+        );
+      } catch {
+        throw new SessionCoreError("attachment transfer is unavailable", "unavailable");
+      }
+      return { accepted: true };
+    },
+    "attachments.transfer.seal": (params) => {
+      const current = ensure();
+      if (current.isIdle !== true || attachmentDispatch.blocksConcurrentWork()) {
+        throw new SessionCoreError("attachment transfer is unavailable", "unavailable");
+      }
+      const input = asRecord(params);
+      if (!attachmentTransfer || Object.keys(input).length !== 1 || typeof input.id !== "string") {
+        throw new SessionCoreError("invalid private attachment transfer", "bad_request");
+      }
+      try {
+        const reader = attachmentTransfer.seal(input.id);
+        transferReaders.set(input.id, reader);
+      } catch {
+        throw new SessionCoreError("attachment transfer is unavailable", "unavailable");
+      }
+      return { sealed: true };
+    },
+    "attachments.transfer.cancel": (params) => {
+      const input = asRecord(params);
+      if (!attachmentTransfer || Object.keys(input).length !== 1 || typeof input.id !== "string") {
+        throw new SessionCoreError("invalid private attachment transfer", "bad_request");
+      }
+      attachmentTransfer.cancel(input.id);
+      transferReaders.get(input.id)?.close();
+      transferReaders.delete(input.id);
+      transferContextRevisions.delete(input.id);
+      plansByTransfer.delete(input.id);
+      return { cancelled: true };
+    },
+    "attachments.image.begin": (params) => {
+      const current = ensure();
+      const input = asRecord(params);
+      if (current.isIdle !== true) {
+        throw new SessionCoreError("image preparation is busy", "busy");
+      }
+      if (
+        !imagePreparation ||
+        Object.keys(input).length !== 6 ||
+        !Object.keys(input).every((key) =>
+          ["id", "originalId", "originalSha256", "bytes", "mime", "expiresAt"].includes(key),
+        )
+      ) {
+        throw new SessionCoreError("invalid private image preparation", "bad_request");
+      }
+      try {
+        imagePreparation.begin({
+          id: input.id as string,
+          originalId: input.originalId as string,
+          originalSha256: input.originalSha256 as string,
+          bytes: input.bytes as number,
+          mime: input.mime as string,
+          expiresAt: input.expiresAt as number,
+        });
+      } catch {
+        throw new SessionCoreError("image preparation is unavailable", "unavailable");
+      }
+      return { staged: true };
+    },
+    "attachments.image.chunk": (params) => {
+      const current = ensure();
+      const input = asRecord(params);
+      if (current.isIdle !== true) {
+        throw new SessionCoreError("image preparation is busy", "busy");
+      }
+      if (
+        !imagePreparation ||
+        Object.keys(input).length !== 3 ||
+        !Object.keys(input).every((key) => ["id", "offset", "encoded"].includes(key))
+      ) {
+        throw new SessionCoreError("invalid private image preparation chunk", "bad_request");
+      }
+      try {
+        imagePreparation.chunk(input.id as string, input.offset as number, input.encoded as string);
+      } catch {
+        throw new SessionCoreError("image preparation is unavailable", "unavailable");
+      }
+      return { accepted: true };
+    },
+    "attachments.image.prepare": async (params) => {
+      const current = ensure();
+      const input = asRecord(params);
+      if (current.isIdle !== true) {
+        throw new SessionCoreError("image preparation is busy", "busy");
+      }
+      const limits = asRecord(input.limits);
+      if (
+        !imagePreparation ||
+        Object.keys(input).length !== 2 ||
+        !Object.keys(input).every((key) => ["id", "limits"].includes(key)) ||
+        Object.keys(limits).length !== 3 ||
+        !Object.keys(limits).every((key) =>
+          ["maxWidth", "maxHeight", "maxEncodedBytes"].includes(key),
+        )
+      ) {
+        throw new SessionCoreError("invalid private image preparation", "bad_request");
+      }
+      try {
+        return await imagePreparation.prepare(input.id as string, {
+          maxWidth: limits.maxWidth as number,
+          maxHeight: limits.maxHeight as number,
+          maxEncodedBytes: limits.maxEncodedBytes as number,
+        });
+      } catch {
+        throw new SessionCoreError("image preparation is unavailable", "unavailable");
+      }
+    },
+    "attachments.image.read": (params) => {
+      const current = ensure();
+      const input = asRecord(params);
+      const part = input.part;
+      if (current.isIdle !== true) {
+        throw new SessionCoreError("image preparation is busy", "busy");
+      }
+      if (
+        !imagePreparation ||
+        Object.keys(input).length !== 4 ||
+        !Object.keys(input).every((key) => ["id", "part", "offset", "length"].includes(key)) ||
+        (part !== "prepared" && part !== "thumbnail")
+      ) {
+        throw new SessionCoreError("invalid private image preparation read", "bad_request");
+      }
+      try {
+        return {
+          encoded: imagePreparation.readChunk(
+            input.id as string,
+            part as PreparationPart,
+            input.offset as number,
+            input.length as number,
+          ),
+        };
+      } catch {
+        throw new SessionCoreError("image preparation is unavailable", "unavailable");
+      }
+    },
+    "attachments.image.cancel": (params) => {
+      const input = asRecord(params);
+      if (!imagePreparation || Object.keys(input).length !== 1 || typeof input.id !== "string") {
+        throw new SessionCoreError("invalid private image preparation", "bad_request");
+      }
+      imagePreparation.cancel(input.id);
+      return { cancelled: true };
+    },
+    "attachments.readiness": (params) => {
+      const current = ensure();
+      const input = asRecord(params);
+      const files = input.files;
+      if (
+        Object.keys(input).length !== 3 ||
+        !Object.keys(input).every((key) => ["profileKey", "text", "files"].includes(key)) ||
+        typeof input.profileKey !== "string" ||
+        !/^[0-9a-f]{64}$/.test(input.profileKey) ||
+        typeof input.text !== "string" ||
+        !isWellFormedAttachmentText(input.text) ||
+        !Array.isArray(files) ||
+        files.length === 0 ||
+        files.length > ATTACHMENT_LIMITS.filesPerDraft
+      ) {
+        throw new SessionCoreError("invalid attachment readiness request", "bad_request");
+      }
+      const branchId = currentAttachmentBranch();
+      if (branchId === undefined) {
+        throw new SessionCoreError("attachment readiness is unavailable", "unavailable");
+      }
+      const assets: AttachmentPolicyAsset[] = [];
+      const seen = new Set<string>();
+      for (const value of files) {
+        const file = asRecord(value);
+        const image = file.image === null ? null : asRecord(file.image);
+        if (
+          Object.keys(file).length !== 6 ||
+          !Object.keys(file).every((key) =>
+            [
+              "id",
+              "originalKind",
+              "originalBytes",
+              "modality",
+              "representationBytes",
+              "image",
+            ].includes(key),
+          ) ||
+          !isAttachmentId(file.id) ||
+          seen.has(file.id as string) ||
+          !ATTACHMENT_ORIGINAL_KINDS.includes(
+            file.originalKind as (typeof ATTACHMENT_ORIGINAL_KINDS)[number],
+          ) ||
+          (file.modality !== "text" && file.modality !== "image") ||
+          !Number.isSafeInteger(file.originalBytes) ||
+          Number(file.originalBytes) < 0 ||
+          Number(file.originalBytes) > ATTACHMENT_LIMITS.documentOriginalBytes ||
+          !Number.isSafeInteger(file.representationBytes) ||
+          Number(file.representationBytes) < 0 ||
+          Number(file.representationBytes) > ATTACHMENT_LIMITS.imageOriginalBytes ||
+          (image !== null &&
+            (Object.keys(image).length !== 2 ||
+              !Object.keys(image).every((key) => ["width", "height"].includes(key)) ||
+              !Number.isSafeInteger(image.width) ||
+              Number(image.width) <= 0 ||
+              Number(image.width) > 32_768 ||
+              !Number.isSafeInteger(image.height) ||
+              Number(image.height) <= 0 ||
+              Number(image.height) > 32_768 ||
+              Number(image.width) * Number(image.height) > ATTACHMENT_LIMITS.imagePixels))
+        ) {
+          throw new SessionCoreError("invalid attachment readiness request", "bad_request");
+        }
+        seen.add(file.id as string);
+        assets.push({
+          originalId: file.id as string,
+          representationId: file.id as string,
+          originalKind: file.originalKind as AttachmentPolicyAsset["originalKind"],
+          originalBytes: Number(file.originalBytes),
+          modality: file.modality as AttachmentPolicyAsset["modality"],
+          representationBytes: Number(file.representationBytes),
+          origin: "direct",
+          approved: true,
+          image: image ? { width: Number(image.width), height: Number(image.height) } : null,
+        });
+      }
+      const usage = current.getContextUsage?.();
+      const sessionId = current.sessionId;
+      if (typeof sessionId !== "string" || sessionId.length === 0) {
+        throw new SessionCoreError("attachment readiness is unavailable", "unavailable");
+      }
+      const text = input.text as string;
+      const scope = {
+        profileKey: input.profileKey as string,
+        sessionId,
+        sessionEpoch,
+        branchId,
+        revision: currentAttachmentRevision(),
+      };
+      const policy = createAttachmentReadinessPolicyContext({
+        scope,
+        model: current.model,
+        idle: current.isIdle === true,
+        messages: Array.isArray(current.messages) ? current.messages : null,
+        contextTokens: typeof usage?.tokens === "number" ? usage.tokens : null,
+        contextWindow: typeof usage?.contextWindow === "number" ? usage.contextWindow : null,
+        images: assets.map((asset) => ({ modality: asset.modality, image: asset.image })),
+        registeredCommand: text.trimStart().startsWith("/"),
+      });
+      const verdict = evaluateAttachmentPolicy(policy, assets, text);
+      // Per-file verdicts describe the file/model/budget only; busy or command
+      // state stays an aggregate reason so it is not repeated on every file.
+      const fileContext = { ...policy, idle: true, registeredCommand: false };
+      return {
+        revision: scope.revision,
+        model: verdict.model,
+        files: assets.map((asset) => ({
+          id: asset.originalId,
+          reasons: evaluateAttachmentPolicy(fileContext, [asset], text).reasons,
+        })),
+        reasons: verdict.reasons,
+        estimatedTokens: verdict.estimatedTokens,
+      };
+    },
+    "attachments.plan": async (params) => {
+      const current = ensure();
+      const input = asRecord(params);
+      if (
+        Object.keys(input).length !== 2 ||
+        !Object.keys(input).every((key) => ["id", "text"].includes(key)) ||
+        typeof input.id !== "string" ||
+        !isAttachmentId(input.id) ||
+        typeof input.text !== "string" ||
+        !isWellFormedAttachmentText(input.text)
+      ) {
+        throw new SessionCoreError("invalid attachment plan request", "bad_request");
+      }
+      if (attachmentDispatch.blocksConcurrentWork())
+        return { outcome: "blocked", reasons: ["busy"] };
+      const reader = transferReaders.get(input.id);
+      if (!reader || !reader.isCurrent()) return { outcome: "blocked", reasons: ["unavailable"] };
+      const planInput = makeAttachmentPlanInput(current, reader, input.text);
+      if (!planInput) return { outcome: "blocked", reasons: ["unavailable"] };
+      const result = attachmentPlanner.plan(planInput);
+      if (result.outcome === "ready") plansByTransfer.set(input.id, result.plan);
+      else plansByTransfer.delete(input.id);
+      return result;
+    },
+    "attachments.submissions.list": (params) => {
+      const current = ensure();
+      const input = asRecord(params);
+      if (Object.keys(input).length !== 0) {
+        throw new SessionCoreError("invalid attachment submission query", "bad_request");
+      }
+      return {
+        version: 1,
+        associations: deps.listAttachmentSubmissions?.(current) ?? [],
+      };
+    },
+    "attachments.prompt": async (params) => {
+      const current = ensure();
+      const input = asRecord(params);
+      const transferId = input.transferId;
+      if (
+        Object.keys(input).length !== 6 ||
+        !Object.keys(input).every((key) =>
+          ["version", "transferId", "planId", "turnId", "attemptId", "text"].includes(key),
+        ) ||
+        typeof transferId !== "string" ||
+        !isAttachmentId(transferId)
+      ) {
+        throw new SessionCoreError("invalid attachment prompt request", "bad_request");
+      }
+      const request = validateAttachmentPromptRequest({
+        version: input.version,
+        planId: input.planId,
+        turnId: input.turnId,
+        attemptId: input.attemptId,
+        text: input.text,
+      });
+      if (!request.ok)
+        throw new SessionCoreError("invalid attachment prompt request", request.reason);
+      const { planId, turnId, attemptId, text } = request.value;
+      if (attachmentDispatch.blocksConcurrentWork() || current.isIdle !== true) {
+        return {
+          outcome: "blocked",
+          reasons: ["busy"],
+          turnId,
+          attemptId,
+        } satisfies AttachmentPromptResult;
+      }
+      const reader = transferReaders.get(transferId);
+      const plan = plansByTransfer.get(transferId);
+      if (!reader || !plan || plan.id !== planId || !reader.isCurrent()) {
+        return {
+          outcome: "blocked",
+          reasons: ["stale_plan"],
+          turnId,
+          attemptId,
+        } satisfies AttachmentPromptResult;
+      }
+      const initial = makeAttachmentPlanInput(current, reader, text);
+      if (!initial || !attachmentPlanner.isCurrent(planId, initial)) {
+        plansByTransfer.delete(transferId);
+        return {
+          outcome: "blocked",
+          reasons: ["stale_plan"],
+          turnId,
+          attemptId,
+        } satisfies AttachmentPromptResult;
+      }
+      const materializationPort = {
+        isCurrent: async (
+          activePlanId: string,
+          assets: readonly AuthorizedAttachmentAsset[],
+          userText: string,
+        ): Promise<boolean> => {
+          const latest = makeAttachmentPlanInput(current, reader, userText);
+          return (
+            !!latest &&
+            current.isIdle === true &&
+            reader.isCurrent() &&
+            attachmentPlanner.isCurrent(activePlanId, { ...latest, assets })
+          );
+        },
+        readChunk: (representationId: string, offset: number, length: number) =>
+          reader.readChunk(representationId, offset, length),
+        sha256: async (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex"),
+      };
+      let materialized: MaterializedAttachmentPrompt;
+      try {
+        materialized = await materializeAttachmentPrompt(
+          materializationPort,
+          plan,
+          reader.assets,
+          text,
+        );
+      } catch {
+        plansByTransfer.delete(transferId);
+        return {
+          outcome: "blocked",
+          reasons: ["unavailable"],
+          turnId,
+          attemptId,
+        } satisfies AttachmentPromptResult;
+      }
+      if (!deps.dispatchAttachmentPrompt) {
+        plansByTransfer.delete(transferId);
+        return {
+          outcome: "blocked",
+          reasons: ["sdk_pipeline_unsafe"],
+          turnId,
+          attemptId,
+        } satisfies AttachmentPromptResult;
+      }
+      let consumed = false;
+      const revalidate = async (): Promise<boolean> => {
+        if (
+          consumed ||
+          attachmentDispatch.blocksConcurrentWork() ||
+          current.isIdle !== true ||
+          !reader.isCurrent()
+        )
+          return false;
+        const latest = makeAttachmentPlanInput(current, reader, text);
+        if (!latest || !attachmentPlanner.consume(planId, latest)) return false;
+        consumed = true;
+        plansByTransfer.delete(transferId);
+        // The coordinator fences ordinary prompts, model/settings mutations and
+        // context transitions until this attempt is accepted and settled.
+        if (!attachmentDispatch.beginDispatch({ turnId, attemptId })) return false;
+        return true;
+      };
+      try {
+        const result = await deps.dispatchAttachmentPrompt({
+          session: current,
+          turnId,
+          attemptId,
+          planId,
+          sourceTextSha256: createHash("sha256").update(text).digest("hex"),
+          scope: reader.scope,
+          assets: reader.assets,
+          expectedModel: plan.model,
+          text: materialized.text,
+          images: materialized.images,
+          revalidate,
+          isCurrent: () =>
+            attachmentDispatch.current()?.turnId === turnId &&
+            reader.isCurrent() &&
+            transferContextRevisions.get(reader.id) === attachmentContextRevision,
+          onLateFailure: () =>
+            deps.emit(
+              "session_error",
+              {
+                message:
+                  "Attachment delivery became uncertain. Stop or restart this session before retrying.",
+              },
+              current.sessionId,
+            ),
+        });
+        if (result.outcome === "handled" || result.outcome === "blocked") {
+          if (attachmentDispatch.current()?.turnId === turnId) {
+            attachmentDispatch.release({ turnId, attemptId });
+            attachmentContextRevision += 1;
+          }
+        } else if (result.outcome === "accepted" && attachmentDispatch.phase() === "dispatching") {
+          attachmentDispatch.accept({ turnId, attemptId });
+        }
+        if (result.turnId !== turnId || result.attemptId !== attemptId) {
+          return { outcome: "uncertain", turnId, attemptId };
+        }
+        return result;
+      } catch {
+        return { outcome: "uncertain", turnId, attemptId };
+      }
+    },
+
+    prompt: async (params) => {
+      const current = ensure();
+      requireNoPendingAttachmentDispatch();
+      const input = asRecord(params);
+      rejectAttachmentFields(input, true);
+      const rawText = typeof input.text === "string" ? input.text : "";
+      let legacyImages: Awaited<ReturnType<typeof validateLegacyImages>> | null = null;
+      if (Object.prototype.hasOwnProperty.call(input, "images")) {
+        try {
+          legacyImages = await validateLegacyImages(input.images, rawText);
+        } catch {
+          throw new SessionCoreError("images must be bounded valid raster blocks", "bad_request");
+        }
+      }
+      const text =
+        rawText.trim().length > 0
+          ? rawText
+          : legacyImages && legacyImages.length > 0
+            ? "Please consider the attached images."
+            : requireString(input.text, "text");
       const behavior = input.streamingBehavior;
       if (behavior !== undefined && behavior !== "steer" && behavior !== "followUp") {
         throw new SessionCoreError(
@@ -1680,6 +2460,19 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
       }
       if (input.ack !== undefined && input.ack !== "preflight") {
         throw new SessionCoreError('ack must be "preflight" when provided', "bad_request");
+      }
+      // Ordinary Desktop prompts are subject to the same image-context rule as
+      // managed sends: never strip history, refuse a route whose images the
+      // active model cannot accept (plan step 9).
+      const promptRouteReasons = evaluatePromptRoute({
+        model: current.model,
+        historyImageCount: estimateAttachmentHistory(
+          Array.isArray(current.messages) ? current.messages : null,
+        ).imageCount,
+        addingImages: (legacyImages?.length ?? 0) > 0,
+      });
+      if (promptRouteReasons.length > 0) {
+        throw new SessionCoreError(promptRouteReasons.join(", "), promptRouteReasons[0]!);
       }
       // Attribution window: only a streaming prompt with an explicit behavior
       // queues, so only that combination needs a pre-call snapshot.
@@ -1761,7 +2554,20 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
 
     steer: async (params) => {
       const current = ensure();
-      const text = requireString(asRecord(params).text, "text");
+      requireNoPendingAttachmentDispatch();
+      const input = asRecord(params);
+      rejectAttachmentFields(input);
+      const text = requireString(input.text, "text");
+      const routeReasons = evaluatePromptRoute({
+        model: current.model,
+        historyImageCount: estimateAttachmentHistory(
+          Array.isArray(current.messages) ? current.messages : null,
+        ).imageCount,
+        addingImages: false,
+      });
+      if (routeReasons.length > 0) {
+        throw new SessionCoreError(routeReasons.join(", "), routeReasons[0]!);
+      }
       if (!current.steer) throw new SessionCoreError("steering is not supported", "unsupported");
       const before = readQueue(current);
       await current.steer(text, undefined, { source: "rpc" });
@@ -1771,7 +2577,20 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
 
     followUp: async (params) => {
       const current = ensure();
-      const text = requireString(asRecord(params).text, "text");
+      requireNoPendingAttachmentDispatch();
+      const input = asRecord(params);
+      rejectAttachmentFields(input);
+      const text = requireString(input.text, "text");
+      const routeReasons = evaluatePromptRoute({
+        model: current.model,
+        historyImageCount: estimateAttachmentHistory(
+          Array.isArray(current.messages) ? current.messages : null,
+        ).imageCount,
+        addingImages: false,
+      });
+      if (routeReasons.length > 0) {
+        throw new SessionCoreError(routeReasons.join(", "), routeReasons[0]!);
+      }
       if (!current.followUp)
         throw new SessionCoreError("follow-up is not supported", "unsupported");
       const before = readQueue(current);
@@ -1830,8 +2649,45 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
       const input = asRecord(params);
       const limit =
         typeof input.limit === "number" && input.limit > 0 ? Math.floor(input.limit) : undefined;
-      const messages = ensure().messages ?? [];
-      return { messages: limit ? messages.slice(-limit) : messages, total: messages.length };
+      const current = ensure();
+      const persisted = deps.listAttachmentSubmissionHistory?.(current) ?? [];
+      if (input.attachmentTurnId !== undefined) {
+        if (Object.keys(input).length !== 1 || !isAttachmentId(input.attachmentTurnId)) {
+          throw new SessionCoreError("invalid attachment transcript lookup", "bad_request");
+        }
+        const found = persisted.find(
+          (item) => item.association.metadata.turnId === input.attachmentTurnId,
+        );
+        return { attachmentCard: found ? attachmentTranscriptCard(found.association) : null };
+      }
+      const messages = current.messages ?? [];
+      const byMessage = new Map<unknown, AttachmentSubmissionTranscriptRecord[]>();
+      for (const item of persisted) {
+        const matches = byMessage.get(item.message) ?? [];
+        matches.push(item);
+        byMessage.set(item.message, matches);
+      }
+      // A repeated object in history is an ambiguous turn: Pi can hold two
+      // entries that are value-identical, and `messages.get` must not attach one
+      // card to both of them.
+      const occurrences = new Map<unknown, number>();
+      for (const message of messages) {
+        occurrences.set(message, (occurrences.get(message) ?? 0) + 1);
+      }
+      const projected = messages.map((message) => {
+        const matches = byMessage.get(message);
+        // Associate only by the exact persisted message object, never by its
+        // filename or text. Ambiguous duplicate references degrade normally.
+        if (!matches || matches.length !== 1 || occurrences.get(message) !== 1) return message;
+        const { association } = matches[0]!;
+        const card: AttachmentTranscriptCard = attachmentTranscriptCard(association);
+        return {
+          ...asRecord(message),
+          id: association.metadata.userEntryId,
+          desktopAttachmentCard: card,
+        };
+      });
+      return { messages: limit ? projected.slice(-limit) : projected, total: messages.length };
     },
 
     "stats.get": () => {
@@ -2234,6 +3090,15 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
     "model.cycle": async (params) => {
       const input = asRecord(params);
       const current = ensure();
+      requireNoAttachmentContextMutation();
+      if (current.isStreaming === true) {
+        const historyImages = estimateAttachmentHistory(
+          Array.isArray(current.messages) ? current.messages : null,
+        ).imageCount;
+        if ((historyImages ?? 0) > 0) {
+          throw new SessionCoreError("cannot cycle models during an active image context", "busy");
+        }
+      }
       if (!current.cycleModel) {
         throw new SessionCoreError("cycling models is not supported", "unsupported");
       }
@@ -2454,6 +3319,7 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
     // the CAS (or the pre-write re-read) retry once instead of losing a model.
     "model.scope.toggle": async (params) => {
       const current = ensure();
+      requireNoAttachmentContextMutation();
       const scope = requireModelScope(current);
       const input = asRecord(params);
       const provider = requireString(input.provider, "provider").trim();
@@ -2531,11 +3397,25 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
 
     "model.set": async (params) => {
       const current = ensure();
+      requireNoAttachmentContextMutation();
       const input = asRecord(params);
       if (!input.model)
         throw new SessionCoreError("model.set requires a model object", "bad_request");
       if (!current.setModel)
         throw new SessionCoreError("model changes are not supported", "unsupported");
+      // An active image run cannot be re-pointed at a model that would drop its
+      // images. When idle the switch is allowed; the prompt-route policy blocks
+      // dispatch until the context/model pair is compatible again.
+      const modelChangeReasons = evaluateModelChange({
+        model: input.model,
+        historyImageCount: estimateAttachmentHistory(
+          Array.isArray(current.messages) ? current.messages : null,
+        ).imageCount,
+        streaming: current.isStreaming === true,
+      });
+      if (modelChangeReasons.length > 0) {
+        throw new SessionCoreError(modelChangeReasons.join(", "), modelChangeReasons[0]!);
+      }
 
       const persist = input.persist === true;
       const scope = input.scope === "project" || input.scope === "global" ? input.scope : undefined;
@@ -2593,6 +3473,7 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
 
     "thinking.set": async (params) => {
       const current = ensure();
+      requireNoAttachmentContextMutation();
       const input = asRecord(params);
       const level = requireString(input.level, "level");
       const persist = input.persist === true;
@@ -2633,6 +3514,7 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
 
     compact: async (params) => {
       const current = ensure();
+      requireNoAttachmentContextMutation();
       const instructions = asRecord(params).instructions;
       const result = await current.compact?.(
         typeof instructions === "string" ? instructions : undefined,
@@ -2660,8 +3542,16 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
   for (const method of SESSION_TRANSITION_METHODS) {
     const handler = handlers[method];
     if (!handler) continue;
-    handlers[method] = (params, context) =>
-      serializeSessionTransition(() => Promise.resolve().then(() => handler(params, context)));
+    handlers[method] = (params, context) => {
+      if (attachmentDispatch.blocksContextMutation()) {
+        return Promise.reject(
+          new SessionCoreError("an attachment turn is active; wait for it to settle", "busy"),
+        );
+      }
+      return serializeSessionTransition(() =>
+        Promise.resolve().then(() => handler(params, context)),
+      );
+    };
   }
 
   return {
@@ -2669,9 +3559,24 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
     snapshot,
     session: () => session,
     identity: () => ({ sessionId: session?.sessionId ?? null, epoch: sessionEpoch }),
+    attachmentDeliverySupport: () =>
+      attachmentTransfer &&
+      imagePreparation &&
+      deps.dispatchAttachmentPrompt &&
+      deps.listAttachmentSubmissions
+        ? ATTACHMENT_DELIVERY_VERSION
+        : null,
     lastOpenTimings: () => lastOpen,
     cwd: () => cwd,
     dispose: async () => {
+      for (const id of transferContextRevisions.keys()) attachmentTransfer?.cancel(id);
+      for (const reader of transferReaders.values()) reader.close();
+      transferContextRevisions.clear();
+      transferReaders.clear();
+      plansByTransfer.clear();
+      attachmentDispatch.settle();
+      attachmentTransfer?.dispose();
+      imagePreparation?.dispose();
       promptOrigins.reset();
       queueOrigins.reset();
       try {

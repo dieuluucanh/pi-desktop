@@ -17,6 +17,7 @@
 /** The `SessionInfo` fields the resolver reads; the rest of Pi's shape is ignored. */
 interface SessionIndexEntry {
   path?: unknown;
+  id?: unknown;
 }
 
 export class SessionFileError extends Error {
@@ -36,19 +37,24 @@ export class SessionFileError extends Error {
 export function resolveListedSession(
   sessions: readonly unknown[],
   sessionFile: unknown,
-): { path: string } {
+): { path: string; id: string | null } {
   if (typeof sessionFile !== "string" || sessionFile.length === 0) {
     throw new SessionFileError("a session file is required");
   }
-  const found = sessions.some((entry) => {
-    if (!entry || typeof entry !== "object") return false;
-    return (entry as SessionIndexEntry).path === sessionFile;
-  });
+  const found = sessions.find(
+    (entry) =>
+      !!entry && typeof entry === "object" && (entry as SessionIndexEntry).path === sessionFile,
+  ) as SessionIndexEntry | undefined;
   if (!found) {
     throw new SessionFileError(
       "that session is not part of this profile — refresh the list before acting on it",
       "not_found",
     );
   }
-  return { path: sessionFile };
+  // The id lets main retire exactly this session's attachment owners; a legacy
+  // entry without one still deletes, it just has no managed assets to retire.
+  return {
+    path: sessionFile,
+    id: typeof found.id === "string" && found.id.length > 0 ? found.id : null,
+  };
 }

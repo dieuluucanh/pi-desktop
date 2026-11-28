@@ -4,6 +4,7 @@ import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Composer, isSendKey } from "../../src/renderer/src/session/Composer";
 import type { ImageAttachment } from "../../src/renderer/src/session/image-attachment";
+import type { AttachmentDraftState } from "../../src/renderer/src/attachments/controller";
 import {
   stepPromptHistory,
   type PromptHistoryBrowse,
@@ -241,6 +242,143 @@ describe("Escape precedence (plan step 23)", () => {
     expect(onEscape).not.toHaveBeenCalled();
     expect(onStop).not.toHaveBeenCalled();
     await waitFor(() => expect(screen.queryByTestId("completion-overlay")).toBeNull());
+  });
+});
+
+describe("managed attachment tray", () => {
+  const fileSnapshot = {
+    id: "123e4567-e89b-42d3-a456-000000000003",
+    name: "report.txt",
+    mimeType: "text/plain",
+    size: 12,
+    originalKind: "text" as const,
+    detectedMime: "text/plain",
+    status: "ready" as const,
+    reason: null,
+    representationId: null,
+    previewAvailable: true,
+    warnings: [],
+  };
+
+  const managedState = (withFile = true): AttachmentDraftState => ({
+    tabId: "tab-1",
+    generation: 0,
+    draftId: "123e4567-e89b-42d3-a456-000000000002",
+    phase: "ready",
+    descriptors: withFile ? [fileSnapshot] : [],
+    readiness: null,
+    imports: [],
+    issues: [],
+    submission: { phase: "idle" },
+    error: null,
+  });
+
+  it("routes mixed file/text paste and external drops through the attachment controller", async () => {
+    const onAttachmentFiles = vi.fn(async () => {});
+    const { container } = renderComposer({
+      draft: "look",
+      attachmentState: managedState(false),
+      onAttachmentFiles,
+      onPickAttachments: vi.fn(async () => {}),
+      onRemoveAttachment: vi.fn(async () => {}),
+      onPreviewAttachment: vi.fn(async () => null),
+      onDismissAttachmentIssue: vi.fn(),
+      onDismissAttachmentImport: vi.fn(),
+    });
+    const file = new File(["content"], "notes.md", { type: "text/markdown" });
+    const pasteResult = fireEvent.paste(screen.getByLabelText("Prompt"), {
+      clipboardData: { files: [file], getData: () => "text copied with the file" },
+    });
+    expect(pasteResult).toBe(true);
+    expect(onAttachmentFiles).toHaveBeenCalledWith([file]);
+
+    const dropResult = fireEvent.drop(container.querySelector('[data-testid="composer-drop"]')!, {
+      dataTransfer: fakeDropTransfer(undefined, [file]),
+    });
+    expect(dropResult).toBe(false);
+    expect(onAttachmentFiles).toHaveBeenLastCalledWith([file]);
+  });
+
+  it("keeps large pasted text and files together on the managed send path", async () => {
+    const user = userEvent.setup();
+    const onAttachmentFiles = vi.fn(async () => {});
+    const { onSend, onDraftChange } = renderComposer({
+      draft: "inspect this",
+      attachmentState: managedState(true),
+      onAttachmentFiles,
+      onPickAttachments: vi.fn(async () => {}),
+      onRemoveAttachment: vi.fn(async () => {}),
+      onPreviewAttachment: vi.fn(async () => null),
+      onDismissAttachmentIssue: vi.fn(),
+      onDismissAttachmentImport: vi.fn(),
+    });
+    const file = new File(["data"], "data.csv", { type: "text/csv" });
+    const largeText = "large pasted text ".repeat(100);
+    const pasteResult = fireEvent.paste(screen.getByLabelText("Prompt"), {
+      clipboardData: { files: [file], getData: () => largeText },
+    });
+    expect(pasteResult).toBe(false);
+    expect(onAttachmentFiles).toHaveBeenCalledWith([file]);
+    expect(onDraftChange.mock.calls.some(([value]) => value.includes("[paste #"))).toBe(true);
+
+    expect(screen.getByRole("button", { name: "Send" })).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(onSend).toHaveBeenCalledOnce());
+  });
+
+  it("allows attachment-only sends only when the host is ready and idle", async () => {
+    const user = userEvent.setup();
+    const { onSend, rerender, props } = renderComposer({
+      draft: "",
+      attachmentState: managedState(true),
+      attachmentReady: true,
+    });
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    expect(onSend).toHaveBeenCalledOnce();
+
+    rerender(<Composer {...props} attachmentReady={false} />);
+    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+  });
+
+  it("locks the draft while delivery is uncertain and exposes an explicit retry", async () => {
+    const user = userEvent.setup();
+    const retry = vi.fn(async () => true);
+    renderComposer({
+      draft: "inspect this file",
+      attachmentState: {
+        ...managedState(true),
+        submission: {
+          phase: "uncertain",
+          text: "inspect this file",
+          turnId: "123e4567-e89b-42d3-a456-000000000002",
+        },
+      },
+      onRetryAttachmentDelivery: retry,
+    });
+    expect(screen.getByLabelText("Prompt")).toHaveAttribute("readonly");
+    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "Retry previous send" }));
+    expect(retry).toHaveBeenCalledOnce();
+  });
+
+  it("uses the main-process file picker and keeps workspace and tab drags distinct", async () => {
+    const user = userEvent.setup();
+    const onPickAttachments = vi.fn(async () => {});
+    renderComposer({
+      attachmentState: managedState(false),
+      onAttachmentFiles: vi.fn(async () => {}),
+      onPickAttachments,
+      onRemoveAttachment: vi.fn(async () => {}),
+      onPreviewAttachment: vi.fn(async () => null),
+      onDismissAttachmentIssue: vi.fn(),
+      onDismissAttachmentImport: vi.fn(),
+    });
+    await user.click(screen.getByRole("button", { name: "Attach files" }));
+    expect(onPickAttachments).toHaveBeenCalledOnce();
+
+    const drop = screen.getByTestId("composer-drop");
+    fireEvent.dragOver(drop, { dataTransfer: { types: [TAB_DRAG_MIME], files: [] } });
+    expect(drop.className).not.toContain("ring-accent");
   });
 });
 

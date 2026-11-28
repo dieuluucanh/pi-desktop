@@ -4,6 +4,7 @@ import { Composer } from "../session/Composer";
 import { ComposerOperationPanel } from "../session/ComposerOperationPanel";
 import { RelatedSessionsBar } from "../session/RelatedSessionsBar";
 import { WorkingBar } from "../session/WorkingBar";
+import { useAttachmentDraft } from "../attachments/use-attachment-draft";
 import { StartingBanner } from "../session/StartingBanner";
 import { SessionFooter } from "../session/SessionFooter";
 import { Transcript } from "../session/Transcript";
@@ -93,6 +94,8 @@ const documentMentionSource = (tabId: string) => ({
  */
 
 export function SessionView({ tabId }: { tabId: string }) {
+  const attachmentProfileScope = useAppStore((state) => state.info?.profileDir ?? "profile");
+  const attachmentDraft = useAttachmentDraft(tabId, attachmentProfileScope);
   const project = useAppStore((state) => state.project);
   const homeDir = useAppStore((state) => state.info?.homeDir ?? null);
   const tabs = useAppStore((state) => state.tabs);
@@ -107,6 +110,8 @@ export function SessionView({ tabId }: { tabId: string }) {
   const cancelSession = useAppStore((state) => state.cancelSession);
   const hydrateTranscript = useAppStore((state) => state.hydrateTranscript);
   const sendPrompt = useAppStore((state) => state.sendPrompt);
+  const sendAttachmentPrompt = useAppStore((state) => state.sendAttachmentPrompt);
+  const expandPastes = useAppStore((state) => state.expandPastes);
   const stopRun = useAppStore((state) => state.stopRun);
   const interruptRun = useAppStore((state) => state.interruptRun);
   const contributionSnapshots = useAppStore((state) => state.contributions);
@@ -350,13 +355,76 @@ export function SessionView({ tabId }: { tabId: string }) {
   // rail follows the selected project, not this tab — 2026-10-30 plan), so the
   // session view no longer owns a scope of its own.
 
+  // Proactive attachment readiness: metadata-only, debounced and never a send.
+  // Hooks must stay above the early return, so the idle predicate is derived
+  // from the tab record/state directly instead of the later `attachmentReady`.
+  const readinessSessionState = active
+    ? (sessionStates[active.id] as
+        | {
+            idle?: unknown;
+            streaming?: unknown;
+            compacting?: unknown;
+            retrying?: unknown;
+          }
+        | undefined)
+    : undefined;
+  const readinessText = active ? (drafts[active.id] ?? "") : "";
+  const readinessAvailable = attachmentDraft.available;
+  const readiness = attachmentDraft.readiness;
+  const hasAttachmentDescriptors = attachmentDraft.state.descriptors.length > 0;
+  const attachmentDescriptorIds = attachmentDraft.state.descriptors
+    .map((descriptor) => descriptor.id)
+    .join(",");
+  const attachmentIdleForReadiness =
+    active !== null &&
+    active.status === "idle" &&
+    readinessSessionState?.idle === true &&
+    readinessSessionState.streaming !== true &&
+    readinessSessionState.compacting !== true &&
+    readinessSessionState.retrying !== true &&
+    !inputLocked;
+  useEffect(() => {
+    if (!readinessAvailable || !attachmentIdleForReadiness || !hasAttachmentDescriptors) return;
+    const timer = setTimeout(() => {
+      void readiness(readinessText);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [
+    readinessAvailable,
+    readiness,
+    attachmentIdleForReadiness,
+    hasAttachmentDescriptors,
+    attachmentDescriptorIds,
+    readinessText,
+  ]);
+
   if (!active) return <WelcomeView />;
 
   const transcript = transcripts[active.id];
   const contextUsage = contextUsageOf(sessionStates[active.id]);
   const levels = thinkingLevels[active.id] ?? thinkingLevelsOf(sessionStates[active.id]);
   const activeState = sessionStates[active.id] as
-    { model?: unknown; thinkingLevel?: unknown; tokens?: { cost?: unknown } } | undefined;
+    | {
+        model?: unknown;
+        thinkingLevel?: unknown;
+        tokens?: { cost?: unknown };
+        idle?: unknown;
+        streaming?: unknown;
+        compacting?: unknown;
+        retrying?: unknown;
+      }
+    | undefined;
+  const attachmentReadinessBlocked =
+    hasAttachmentDescriptors &&
+    (attachmentDraft.state.readiness === null ||
+      attachmentDraft.state.readiness.outcome !== "ready");
+  const attachmentReady =
+    active.status === "idle" &&
+    activeState?.idle === true &&
+    activeState.streaming !== true &&
+    activeState.compacting !== true &&
+    activeState.retrying !== true &&
+    !inputLocked;
   const cost = typeof activeState?.tokens?.cost === "number" ? activeState.tokens.cost : null;
   const thinkingLevel =
     typeof activeState?.thinkingLevel === "string" ? activeState.thinkingLevel : null;
@@ -652,17 +720,65 @@ export function SessionView({ tabId }: { tabId: string }) {
               focusToken={surfaceFocusToken}
               active={active.id === focusedTabId}
             />
-          ) : tuiOwnsComposer && tuiSurface && dockLayer ? (
-            <TuiSurface
-              tabId={active.id}
-              snapshot={tuiSurface}
-              layer={dockLayer}
-              cell={viewport.cell}
-              grid={{ rows: viewport.rows, cols: viewport.cols }}
-              variant="dock"
-              focusToken={surfaceFocusToken}
-              active={paneFocused}
-            />
+          ) : tuiOwnsComposer && tuiSurface ? (
+            <>
+              {attachmentDraft.available && attachmentDraft.state.descriptors.length > 0 ? (
+                <div
+                  className="flex flex-col gap-1 border-t border-line bg-surface px-2 py-1.5"
+                  data-testid="attachment-retained-bar"
+                  aria-label="Retained files"
+                >
+                  <p className="text-[11px] text-ink">
+                    {attachmentDraft.state.descriptors.length} file
+                    {attachmentDraft.state.descriptors.length === 1 ? "" : "s"} retained this draft;
+                    the extension composer cannot send them.
+                  </p>
+                  <ul className="flex min-w-0 flex-wrap gap-1">
+                    {attachmentDraft.state.descriptors.map((descriptor) => (
+                      <li
+                        key={descriptor.id}
+                        className="flex min-w-0 items-center gap-1 rounded-sm border border-line bg-raised/60 px-1.5 py-0.5"
+                      >
+                        <span className="max-w-40 truncate text-[10px]" title={descriptor.name}>
+                          {descriptor.name}
+                        </span>
+                        {descriptor.reason ? (
+                          <span className="text-[10px] text-warn">
+                            {descriptor.reason === "conversion_required"
+                              ? "needs conversion"
+                              : "blocked"}
+                          </span>
+                        ) : null}
+                        <button
+                          type="button"
+                          className="text-[10px] text-ink-muted underline-offset-2 hover:underline"
+                          aria-label={`Remove ${descriptor.name} from this draft`}
+                          onClick={() => void attachmentDraft.remove(descriptor.id)}
+                        >
+                          Remove
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                  {attachmentDraft.state.readiness?.outcome === "blocked" ? (
+                    <p className="text-[10px] text-warn" role="status">
+                      Not ready to send. Remove or resolve the files before switching back to the
+                      normal composer.
+                    </p>
+                  ) : null}
+                </div>
+              ) : null}
+              <TuiSurface
+                tabId={active.id}
+                snapshot={tuiSurface}
+                layer={dockLayer}
+                cell={viewport.cell}
+                grid={{ rows: viewport.rows, cols: viewport.cols }}
+                variant="dock"
+                focusToken={surfaceFocusToken}
+                active={paneFocused}
+              />
+            </>
           ) : (
             <div className="contents" inert={floatingOverlay || undefined}>
               <ComposerOperationPanel
@@ -723,6 +839,34 @@ export function SessionView({ tabId }: { tabId: string }) {
                 }
                 draft={drafts[active.id] ?? ""}
                 queue={transcript?.queue ?? { steering: [], followUp: [] }}
+                attachmentState={attachmentDraft.available ? attachmentDraft.state : undefined}
+                attachmentReady={attachmentReady}
+                attachmentReadinessBlocked={attachmentReadinessBlocked}
+                onAttachmentFiles={
+                  attachmentDraft.available ? attachmentDraft.importFiles : undefined
+                }
+                onPickAttachments={attachmentDraft.available ? attachmentDraft.pick : undefined}
+                onRemoveAttachment={attachmentDraft.available ? attachmentDraft.remove : undefined}
+                onPreviewAttachment={
+                  attachmentDraft.available ? attachmentDraft.preview : undefined
+                }
+                onDismissAttachmentIssue={
+                  attachmentDraft.available ? attachmentDraft.dismissIssue : undefined
+                }
+                onDismissAttachmentImport={
+                  attachmentDraft.available ? attachmentDraft.dismissImport : undefined
+                }
+                onRetryAttachmentDelivery={
+                  attachmentDraft.available
+                    ? () =>
+                        sendAttachmentPrompt(active.id, drafts[active.id] ?? "", () =>
+                          attachmentDraft.retryDelivery(),
+                        )
+                    : undefined
+                }
+                onResetAttachmentDraft={
+                  attachmentDraft.available ? attachmentDraft.resetDraft : undefined
+                }
                 workspaceRoot={active.cwd}
                 mentionRequest={mentionRequest?.tabId === active.id ? mentionRequest : null}
                 onMentionHandled={(id) =>
@@ -766,6 +910,16 @@ export function SessionView({ tabId }: { tabId: string }) {
                 onRequestShortcuts={() => void loadShortcuts({ tabId: active.id })}
                 onDraftChange={(text) => setDraft(active.id, text)}
                 onSend={async (text, images, options) => {
+                  if (attachmentDraft.state.descriptors.length > 0) {
+                    if (images.length > 0) {
+                      setHint("Remove legacy image payloads before sending managed files.");
+                      return "refused";
+                    }
+                    const sent = await sendAttachmentPrompt(active.id, text, () =>
+                      attachmentDraft.submit(expandPastes(active.id, text)),
+                    );
+                    return sent ? "sent" : "refused";
+                  }
                   const mode = options?.followUp ? "followUp" : "steer";
                   return sendPrompt(active.id, text, {
                     ...(active.status === "running" ? { mode } : {}),

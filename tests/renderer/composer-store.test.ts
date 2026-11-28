@@ -52,6 +52,50 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+describe("sendAttachmentPrompt", () => {
+  beforeEach(() => {
+    Object.assign(window.pi, { attachments: {} });
+    useAppStore.setState({ ensureSession: async () => true });
+  });
+
+  it("dispatches attachment turns through the dedicated callback and restores a refused draft", async () => {
+    const dispatch = vi.fn(async () => false);
+    useAppStore.getState().setDraft("tab-1", "inspect this file");
+
+    await expect(
+      useAppStore.getState().sendAttachmentPrompt("tab-1", "inspect this file", dispatch),
+    ).resolves.toBe(false);
+
+    expect(dispatch).toHaveBeenCalledOnce();
+    expect(useAppStore.getState().prefs.drafts["tab-1"]).toBe("inspect this file");
+  });
+
+  it("refuses file-bearing turns while busy and before command routing", async () => {
+    const dispatch = vi.fn(async () => true);
+    useAppStore.setState({ tabs: [tab("running")] });
+    useAppStore.getState().setDraft("tab-1", "inspect this file");
+    await expect(
+      useAppStore.getState().sendAttachmentPrompt("tab-1", "inspect this file", dispatch),
+    ).resolves.toBe(false);
+    expect(dispatch).not.toHaveBeenCalled();
+
+    useAppStore.setState({ tabs: [tab("idle")] });
+    await expect(
+      useAppStore.getState().sendAttachmentPrompt("tab-1", "/help", dispatch),
+    ).resolves.toBe(false);
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(useAppStore.getState().prefs.drafts["tab-1"]).toBe("inspect this file");
+  });
+
+  it("clears the draft only after accepted attachment dispatch", async () => {
+    useAppStore.getState().setDraft("tab-1", "inspect this file");
+    await expect(
+      useAppStore.getState().sendAttachmentPrompt("tab-1", "inspect this file", async () => true),
+    ).resolves.toBe(true);
+    expect(useAppStore.getState().prefs.drafts["tab-1"]).toBe("");
+  });
+});
+
 describe("sendPrompt", () => {
   it("sends a plain prompt when idle, clears the draft and remembers it", async () => {
     const request = stubRequest(async () => ({}));

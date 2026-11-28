@@ -8,6 +8,7 @@
  */
 
 import { DEFAULT_PROFILE_MODE, sanitizeProfileMode, type ProfileMode } from "./profile";
+import { isAttachmentId } from "./attachments";
 import {
   DEFAULT_GRID_PREFS,
   mergeGridPrefs,
@@ -69,6 +70,7 @@ export const PREF_KEYS = [
   "sidebarCollapsed",
   "sidebarWidth",
   "drafts",
+  "attachmentDraftIds",
   "telemetryEnabled",
   "privacyAcknowledged",
   "profileMode",
@@ -205,6 +207,8 @@ export interface UiPrefs {
    * tab switch or an app restart. Bounded below: a draft is not a document.
    */
   drafts: Record<string, string>;
+  /** Stable app-owned attachment draft identities; bearer grants and file bytes stay transient. */
+  attachmentDraftIds: Record<string, string>;
   /**
    * Pi's install telemetry (plan step 23). **Off by default**: every host is
    * spawned with `PI_TELEMETRY=0` unless this is true, so the app never sends an
@@ -328,6 +332,7 @@ export const DEFAULT_PREFS: UiPrefs = {
   sidebarCollapsed: false,
   sidebarWidth: DEFAULT_SIDEBAR_WIDTH,
   drafts: {},
+  attachmentDraftIds: {},
   telemetryEnabled: false,
   privacyAcknowledged: false,
   profileMode: DEFAULT_PROFILE_MODE,
@@ -385,6 +390,25 @@ export function sanitizeDrafts(input: unknown): Record<string, string> {
   return drafts;
 }
 
+/** Persists only stable opaque IDs; the per-process authority token is never stored. */
+export function sanitizeAttachmentDraftIds(input: unknown): Record<string, string> {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return {};
+  const result: Record<string, string> = {};
+  for (const [tabId, draftId] of Object.entries(input as Record<string, unknown>)) {
+    if (
+      tabId.length === 0 ||
+      tabId.length > 128 ||
+      Array.from(tabId).some((character) => character.charCodeAt(0) < 32) ||
+      !isAttachmentId(draftId)
+    ) {
+      continue;
+    }
+    result[tabId] = draftId;
+    if (Object.keys(result).length >= MAX_DRAFT_TABS) break;
+  }
+  return result;
+}
+
 /** Keeps the draft map small and string-valued; unknown tabs are dropped. */
 export function sanitizePrefs(input: unknown): UiPrefs {
   const source = input && typeof input === "object" ? (input as Record<string, unknown>) : {};
@@ -408,6 +432,7 @@ export function sanitizePrefs(input: unknown): UiPrefs {
         ? clampSidebarWidth(source.sidebarWidth)
         : DEFAULT_PREFS.sidebarWidth,
     drafts: sanitizeDrafts(source.drafts),
+    attachmentDraftIds: sanitizeAttachmentDraftIds(source.attachmentDraftIds),
     // A missing value is off: an older app-state.json (or a fresh profile) must
     // never opt the user into telemetry by omission.
     telemetryEnabled:

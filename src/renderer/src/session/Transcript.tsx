@@ -24,6 +24,8 @@ import { OfficeToolCard } from "./OfficeToolCard";
 import { isOfficeTool, officeToolSummary } from "./office-tool-card";
 import { useMarkdownTransform } from "./useMarkdownTransform";
 import { useStickToBottom } from "./use-stick-to-bottom";
+import { AttachmentTranscriptCardView } from "../attachments/AttachmentTranscriptCard";
+import { attachmentCardView } from "../attachments/card";
 import { useAppStore } from "../state/app-store";
 import { matchesBinding } from "../shortcuts/dom-keys";
 import { resolveDesktopKeymap } from "../../../shared/desktop-keymap";
@@ -423,6 +425,12 @@ function MessageView({
   onTogglePrompt?: () => void;
 }) {
   const text = textOf(message.blocks);
+  // A host-validated association may group the managed text envelope into a
+  // card. Parsing is strict: a mismatch keeps the raw Pi message untouched.
+  const cardView = useMemo(
+    () => (message.role === "user" && message.attachmentCard ? attachmentCardView(message) : null),
+    [message],
+  );
 
   if (message.role === "compaction" || message.role === "branchSummary") {
     return (
@@ -485,14 +493,17 @@ function MessageView({
       orderedBlocks.push(block);
     }
   }
-  const hasText = message.blocks.some((block) => block.kind === "text" && block.text.length > 0);
+  const displayedText = cardView?.grouped ? cardView.prose : text;
+  const hasText = displayedText.length > 0;
   const stopNote = stopReasonNote(message);
   const commandOrigin =
     message.role === "user" && message.promptOrigin ? message.promptOrigin : undefined;
   const isCommandPrompt = commandOrigin !== undefined;
   const promptVisible = !isCommandPrompt || promptExpanded === true;
   const promptLines = text.length === 0 ? 0 : text.split("\n").length;
-  const copyText = isCommandPrompt && !promptVisible ? commandOrigin : text;
+  // Copy is the visible message: user prose for a grouped card, because the
+  // card owns the explicit "copy submitted content" action for file content.
+  const copyableText = isCommandPrompt && !promptVisible ? commandOrigin : displayedText;
 
   const commandHeader = isCommandPrompt ? (
     <div className="mb-1 flex min-w-0 items-center gap-2 text-[11px]" data-testid="command-prompt">
@@ -542,17 +553,22 @@ function MessageView({
           // the user typed; hide it until the row (or the setting/Ctrl+O) says
           // otherwise (2026-10-26 composer plan).
           if (isCommandPrompt && !promptVisible) return null;
+          const shown = cardView?.grouped ? cardView.prose : block.text;
+          if (shown.length === 0) return null;
           return (
             <MessageTextBlock
               key={`block-${index}`}
               {...(tabId ? { tabId } : {})}
-              text={block.text}
+              text={shown}
               role={message.role === "user" ? "user" : "assistant"}
               streaming={message.streaming}
             />
           );
         }
         if (block.kind === "image") {
+          // The card renders validated submitted images; unmapped blocks stay
+          // ordinary Pi inline images so nothing is silently dropped.
+          if (cardView?.imagesSubmitted) return null;
           return (
             <img
               key={`block-${index}`}
@@ -576,6 +592,7 @@ function MessageView({
           </div>
         );
       })}
+      {cardView ? <AttachmentTranscriptCardView view={cardView} /> : null}
       {stopNote ? (
         <p
           role="status"
@@ -588,7 +605,7 @@ function MessageView({
         </p>
       ) : null}
       {message.streaming ? <span className="ml-0.5 animate-pulse text-accent">▍</span> : null}
-      {!message.streaming && hasText ? <MessageActions text={copyText} /> : null}
+      {!message.streaming && hasText ? <MessageActions text={copyableText} /> : null}
     </>
   );
 

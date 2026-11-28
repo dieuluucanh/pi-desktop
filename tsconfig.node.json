@@ -26,6 +26,7 @@
     // the bundled host runtime.
     "src/git/**/*.ts",
     "src/checkpoints/**/*.ts",
+    "src/attachments/**/*.ts",
     "src/workspace/**/*.ts",
     "src/extensions/**/*.ts",
     // The completion engine is pure (no DOM, no React): the node project checks it

@@ -194,7 +194,10 @@ describe("ConnectionsView", () => {
             baseUrl: "https://gateway.example.com/v1",
             api: "openai-completions",
             apiKey: "sk-gateway-secret",
-            models: [{ id: "gpt-5" }, { id: "gpt-5-mini" }],
+            models: [
+              { id: "gpt-5", input: ["text"] },
+              { id: "gpt-5-mini", input: ["text"] },
+            ],
           },
         },
       }),
@@ -229,9 +232,38 @@ describe("ConnectionsView", () => {
             baseUrl: "https://router.huggingface.co/v1",
             api: "openai-completions",
             models: [
-              { id: "hf:deepseek-ai/DeepSeek-V4.1-Flash" },
-              { id: "~anthropic/claude-opus-latest" },
+              { id: "hf:deepseek-ai/DeepSeek-V4.1-Flash", input: ["text"] },
+              { id: "~anthropic/claude-opus-latest", input: ["text"] },
             ],
+          },
+        },
+      }),
+    );
+  });
+
+  it("lets the user declare SDK-supported image input for custom models", async () => {
+    const request = stubRequest();
+    render(<ConnectionsView />);
+    await waitFor(() => expect(screen.getByTestId("group-custom")).toBeInTheDocument());
+
+    await userEvent.click(screen.getByRole("button", { name: /Add gateway/ }));
+    await userEvent.type(screen.getByLabelText("Provider id"), "vision-gateway");
+    await userEvent.type(screen.getByLabelText("Base URL"), "https://vision.example.com/v1");
+    await userEvent.type(screen.getByLabelText("Model ids"), "vision-model");
+    await userEvent.selectOptions(screen.getByLabelText("Model input capabilities"), "text-image");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() =>
+      expect(request).toHaveBeenCalledWith({
+        tabId: "control",
+        method: "providers.custom",
+        params: {
+          action: "set",
+          provider: {
+            id: "vision-gateway",
+            baseUrl: "https://vision.example.com/v1",
+            api: "openai-completions",
+            models: [{ id: "vision-model", input: ["text", "image"] }],
           },
         },
       }),

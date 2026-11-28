@@ -21,6 +21,7 @@ import {
   HostStoppedError,
   HostTimeoutError,
   type HostStatus,
+  type HostProcessPin,
 } from "../../src/main/host-supervisor";
 
 /**
@@ -58,6 +59,7 @@ class FakeHost implements SupervisorHostLike {
   private pendingOpenResolve: ((value: unknown) => void) | null = null;
   private readonly onOpen: (() => void) | undefined;
   private readonly leaveOpenPendingOnStop: boolean;
+  reservations = 0;
 
   constructor(
     sessionId: string,
@@ -110,7 +112,21 @@ class FakeHost implements SupervisorHostLike {
   }
 
   pinned(): boolean {
-    return this.pinnedValue;
+    return this.pinnedValue || this.reservations > 0;
+  }
+
+  acquirePin(): HostProcessPin {
+    this.reservations++;
+    let released = false;
+    return {
+      generation: 1,
+      isCurrent: () => !released && this.statusValue === "ready",
+      release: () => {
+        if (released) return;
+        released = true;
+        this.reservations--;
+      },
+    };
   }
 
   stopReason(): TabStopReason | null {
@@ -430,6 +446,169 @@ beforeEach(() => {
 });
 afterEach(() => {
   vi.useRealTimers();
+});
+
+describe("main-only session reservations", () => {
+  it("does not wake unknown, unready or non-session tabs to acquire a pin", async () => {
+    const h = createHarness();
+    expect(() => h.service.pinSessionHost("unknown")).toThrow();
+    await h.service.createTab({ cwd: "C:/work" });
+    expect(() => h.service.pinSessionHost("tab-1")).toThrow(/not ready/);
+    expect(h.newest().reservations).toBe(0);
+    expect(h.specs).toHaveLength(1);
+    await h.service.createTab({ kind: "web", url: "https://example.com", cwd: "C:/work" });
+    expect(() => h.service.pinSessionHost("tab-2")).toThrow();
+    expect(h.specs).toHaveLength(1);
+    await h.service.dispose();
+  });
+
+  it("binds the pin to session identity and epoch and never revives a revoked handle", async () => {
+    const h = createHarness();
+    await h.service.createTab({ cwd: "C:/work" });
+    const host = h.newest();
+    host.emit("state", { sessionId: "session-1" }, { sessionId: "session-1", sessionEpoch: 1 });
+    const pin = h.service.pinSessionHost("tab-1");
+    const sibling = h.service.pinSessionHost("tab-1");
+    expect(pin).toMatchObject({ tabId: "tab-1", sessionId: "session-1", sessionEpoch: 1 });
+    expect(pin.isCurrent()).toBe(true);
+    expect(host.reservations).toBe(2);
+    sibling.release();
+    sibling.release();
+    expect(host.reservations).toBe(1);
+    host.emit("session_replaced", {}, { sessionId: "session-1", sessionEpoch: 2 });
+    expect(pin.isCurrent()).toBe(false);
+    expect(host.reservations).toBe(1); // Retained until the lease drains its reads.
+    const next = h.service.pinSessionHost("tab-1");
+    expect(next.sessionEpoch).toBe(2);
+    pin.release();
+    expect(host.reservations).toBe(1);
+    await h.service.stopTab("tab-1");
+    expect(next.isCurrent()).toBe(false);
+    await h.service.ensureTab("tab-1");
+    expect(next.isCurrent()).toBe(false);
+    next.release();
+    expect(host.reservations).toBe(0);
+    await h.service.dispose();
+  });
+
+  it("keeps failed pin release retryable without reviving a revoked fence", async () => {
+    const h = createHarness();
+    await h.service.createTab({ cwd: "C:/work" });
+    const host = h.newest();
+    host.emit("state", { sessionId: "session-1" }, { sessionId: "session-1", sessionEpoch: 1 });
+    const acquire = host.acquirePin.bind(host);
+    let fail = true;
+    host.acquirePin = () => {
+      const process = acquire();
+      return {
+        ...process,
+        release: () => {
+          if (fail) throw new Error("injected release failure");
+          process.release();
+        },
+      };
+    };
+    const pin = h.service.pinSessionHost("tab-1");
+    expect(() => pin.release()).toThrow("injected release failure");
+    expect(pin.isCurrent()).toBe(false);
+    expect(host.reservations).toBe(1);
+    fail = false;
+    pin.release();
+    pin.release();
+    expect(host.reservations).toBe(0);
+    expect(pin.isCurrent()).toBe(false);
+    await h.service.dispose();
+  });
+
+  it("allows parent-only transfer requests only through a current pinned host", async () => {
+    const h = createHarness();
+    await h.service.createTab({ cwd: "C:/work" });
+    const host = h.newest();
+    host.emit("state", { sessionId: "session-1" }, { sessionId: "session-1", sessionEpoch: 1 });
+    const pin = h.service.pinSessionHost("tab-1");
+    await expect(pin.request("attachments.transfer.cancel", { id: "transfer-1" })).resolves.toEqual(
+      {},
+    );
+    expect(host.requests.at(-1)?.method).toBe("attachments.transfer.cancel");
+    expect(host.requests.at(-1)?.timeoutMs).toBe(10_000);
+    host.emit("session_replaced", {}, { sessionId: "session-1", sessionEpoch: 2 });
+    const requests = host.requests.length;
+    await expect(pin.request("attachments.transfer.cancel", { id: "transfer-1" })).rejects.toThrow(
+      /stale/,
+    );
+    expect(host.requests).toHaveLength(requests);
+    pin.release();
+    await h.service.dispose();
+  });
+
+  it("fails closed when an older host cannot supply a real process reservation", async () => {
+    const h = createHarness();
+    await h.service.createTab({ cwd: "C:/work" });
+    const host = h.newest();
+    host.emit("state", { sessionId: "session-1" }, { sessionId: "session-1", sessionEpoch: 1 });
+    Reflect.set(host, "acquirePin", undefined);
+    expect(() => h.service.pinSessionHost("tab-1")).toThrow(/not ready/);
+    expect(host.reservations).toBe(0);
+    await h.service.dispose();
+  });
+
+  it("rechecks a reservation acquired while a background parking probe is awaited", async () => {
+    let now = 1_000;
+    const h = createHarness({ now: () => now, hostRssLimitBytes: 100, rssBytes: 100 });
+    await h.service.createTab({ cwd: "C:/work/a" });
+    const first = h.newest();
+    await h.service.createTab({ cwd: "C:/work/b" });
+    now += 60_000;
+    let answer = (_value: unknown): void => {};
+    let enter = (): void => {};
+    const pending = new Promise<unknown>((resolve) => {
+      answer = resolve;
+    });
+    const entered = new Promise<void>((resolve) => {
+      enter = resolve;
+    });
+    const original = first.request.bind(first);
+    first.request = (method, params, options) => {
+      if (method !== "state.get") return original(method, params, options);
+      enter();
+      return pending;
+    };
+    const reclaim = h.service.reclaimHosts();
+    await entered;
+    const pin = first.acquirePin();
+    answer({ streaming: false });
+    await reclaim;
+    expect(h.stopped).not.toContain("tab-1");
+    first.request = original;
+    pin.release();
+    await h.service.reclaimHosts();
+    expect(h.stopped).toContain("tab-1");
+    await h.service.dispose();
+  });
+
+  it("protects a background session from capacity parking until release", async () => {
+    let now = 1_000;
+    const h = createHarness({
+      maxLiveHosts: 2,
+      now: () => now,
+      hostRssLimitBytes: 100,
+      rssBytes: 100,
+    });
+    await h.service.createTab({ cwd: "C:/work/a" });
+    const first = h.newest();
+    first.emit("state", { sessionId: "session-1" }, { sessionId: "session-1", sessionEpoch: 1 });
+    const pin = h.service.pinSessionHost("tab-1");
+    now += 60_000;
+    await h.service.createTab({ cwd: "C:/work/b" });
+    now += 60_000;
+    await h.service.reclaimHosts();
+    expect(h.stopped).not.toContain("tab-1");
+    expect(pin.isCurrent()).toBe(true);
+    pin.release();
+    await h.service.reclaimHosts();
+    expect(h.stopped).toContain("tab-1");
+    await h.service.dispose();
+  });
 });
 
 describe("control host", () => {
@@ -3672,5 +3851,18 @@ describe("related-session host events (orchestrator step 12)", () => {
       ).toHaveLength(2),
     );
     expect(service.tabs()).toHaveLength(2);
+  });
+});
+
+describe("attachment protocol negotiation on a pin", () => {
+  it("reports a missing capability for a host that greets without one", async () => {
+    const h = createHarness();
+    await h.service.createTab({ cwd: "C:/work" });
+    const host = h.newest();
+    host.emit("state", { sessionId: "session-1" }, { sessionId: "session-1", sessionEpoch: 1 });
+    const pin = h.service.pinSessionHost("tab-1");
+    expect(pin.attachmentDelivery).toEqual({ supported: false, reason: "missing" });
+    pin.release();
+    await h.service.dispose();
   });
 });

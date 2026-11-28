@@ -124,3 +124,11 @@ use **Unmute all**. Both layers only hide a notification from the bell and
 toasts: the archive keeps it, and the bell's **Show hidden (N)** can recover it.
 See
 [extension UI](../architecture/extension-ui.md#notification-classes-offers-and-muting-2026-11-08-offers-derived-2026-11-18).
+
+## Attachments
+
+**Settings → Attachments** reports local attachment usage, quota, free space,
+recoverable copies and unreferenced copies. **Reclaim space** removes only
+app-owned copies that no session references and that are outside the 30-day
+recovery window; it never deletes Pi history, provider-retained data or project
+files. See [Attachments](attachments.md).

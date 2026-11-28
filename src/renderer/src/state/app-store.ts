@@ -1,7 +1,12 @@
 import { create } from "zustand";
+import { hasAttachmentDraft, notifyAttachmentTabClosed } from "../attachments/lifecycle";
 import { toast } from "sonner";
 import type { AppInfo, WebTabOpenInput } from "../../../shared/ipc";
 import type { BlobRef, HostMethod } from "../../../shared/host-protocol";
+import {
+  validateAttachmentTranscriptCard,
+  type AttachmentPromptResult,
+} from "../../../shared/attachments";
 import { DEFAULT_PREFS, type PackageCheckPrefs, type UiPrefs } from "../../../shared/prefs";
 import { mergeTerminalPrefs, type TerminalPrefs } from "../../../shared/terminal-prefs";
 import { mergeEditorPrefs, type EditorPrefs } from "../../../shared/editor-prefs";
@@ -232,6 +237,7 @@ import {
   type PackageUpdateSummary,
 } from "../../../shared/packages";
 import {
+  applyAttachmentTranscriptCard,
   applyPromptOrigins,
   createTranscriptState,
   hydrateMessages,
@@ -1193,6 +1199,8 @@ export interface AppStateShape {
   shareError: string | null;
   shareErrorCode: string | null;
   shareIncludeTranscript: boolean;
+  /** Native export awaiting the truthful-content confirmation (plan step 15). */
+  pendingExport: { tabId: string; format: "html" | "jsonl" } | null;
   shareHint: string | null;
   openShare: (tabId: string) => Promise<void>;
   openBugReport: (tabId: string, hint?: string) => Promise<void>;
@@ -1339,6 +1347,8 @@ export interface AppStateShape {
   applySessionState: (envelope: SessionStateEnvelope) => void;
   /** Loads history from `messages.get` once per tab (plan step 5). */
   hydrateTranscript: (tabId: string) => Promise<void>;
+  /** Reconciles a persisted attachment association after an accepted/uncertain send. */
+  reconcileAttachmentSubmission: (tabId: string, result: AttachmentPromptResult) => Promise<void>;
   /** Aborts the run of a tab (the transcript's error banner action). */
   abortTab: (tabId: string) => Promise<void>;
   /** Stops and re-spawns a tab's host, resuming its session (plan step 22). */
@@ -1509,6 +1519,12 @@ export interface AppStateShape {
     tabId: string,
     text: string,
     options?: { mode?: SendMode; images?: PromptImage[]; promptOrigin?: string },
+  ) => Promise<boolean>;
+  /** Managed attachment turns bypass command routing and never enter streaming queues. */
+  sendAttachmentPrompt: (
+    tabId: string,
+    text: string,
+    dispatch: () => Promise<boolean | AttachmentPromptResult | null>,
   ) => Promise<boolean>;
   /** `clearQueue` then `abort`, restoring the queued text into the draft. */
   stopRun: (tabId: string) => Promise<void>;
@@ -2355,6 +2371,10 @@ export interface AppStateShape {
   exportSessionHtml: (tabId: string) => Promise<void>;
   /** JSONL export (`/export jsonl`, plan step 14). */
   exportSessionJsonl: (tabId: string) => Promise<void>;
+  /** Ask for the native-export content confirmation before writing. */
+  requestExport: (tabId: string, format: "html" | "jsonl") => void;
+  confirmExport: () => Promise<void>;
+  cancelExport: () => void;
   /** A pending `/import`: the path is confirmed before the session is replaced. */
   importPrompt: { tabId: string; path: string } | null;
   /** Picks a JSONL file (or uses `path`) and asks for confirmation. */
@@ -3966,6 +3986,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   shareError: null,
   shareErrorCode: null,
   shareIncludeTranscript: false,
+  pendingExport: null,
   shareHint: null,
   changelogOpen: false,
   changelogPath: null,
@@ -4728,6 +4749,7 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       closedTabIds.delete(oldest);
     }
     const removed = closedIds.length > 0;
+    if (removed) notifyAttachmentTabClosed(closedIds);
     // A closed tab must not leave a stale pane assignment: clear its slot (never
     // re-flow the layout), so every reader sees `null` rather than a ghost id.
     // Only a real change writes prefs, so a normal publish touches nothing.
@@ -5113,6 +5135,35 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
       await run;
     } finally {
       if (transcriptHydrating.get(tabId) === run) transcriptHydrating.delete(tabId);
+    }
+  },
+
+  reconcileAttachmentSubmission: async (tabId, result) => {
+    if (result.outcome !== "accepted" && result.outcome !== "uncertain") return;
+    const api = bridge();
+    if (!api?.sessions) return;
+    try {
+      const response = (await api.sessions.request({
+        tabId,
+        method: "messages.get",
+        params: { attachmentTurnId: result.turnId },
+      })) as { attachmentCard?: unknown };
+      if (closedTabIds.has(tabId) || !get().tabs.some((tab) => tab.id === tabId)) return;
+      const card = validateAttachmentTranscriptCard(response.attachmentCard);
+      if (
+        !card ||
+        card.turnId !== result.turnId ||
+        (result.outcome === "accepted" && card.userEntryId !== result.userEntryId)
+      )
+        return;
+      const transcript = get().transcripts[tabId];
+      if (!transcript) return;
+      const reconciled = applyAttachmentTranscriptCard(transcript, card);
+      if (reconciled !== transcript) {
+        set({ transcripts: { ...get().transcripts, [tabId]: reconciled } });
+      }
+    } catch {
+      // History hydration remains authoritative; reconciliation is best-effort.
     }
   },
 
@@ -6081,8 +6132,66 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
    * The send path (plan step 7): a leading `/` is resolved before anything is
    * sent, so an unknown command becomes a hint instead of a literal prompt.
    */
+  sendAttachmentPrompt: async (tabId, text, dispatch) => {
+    const trimmed = text.trim();
+    const tab = get().tabs.find((entry) => entry.id === tabId);
+    if (!tab || !bridge()?.attachments) return false;
+    const sessionState = get().sessionStates[tabId] as
+      { streaming?: unknown; compacting?: unknown; retrying?: unknown } | undefined;
+    if (
+      tab.status === "running" ||
+      sessionState?.streaming === true ||
+      sessionState?.compacting === true ||
+      sessionState?.retrying === true
+    ) {
+      set({ hint: "Files can only be sent while the session is idle; they are not queued." });
+      return false;
+    }
+    if (contributionInputLocked(get().contributions[tabId])) {
+      set({ hint: "An extension owns this turn — file attachments cannot be sent." });
+      return false;
+    }
+    if (trimmed.startsWith("/") || isShellCommand(trimmed)) {
+      set({
+        hint: "Commands cannot consume selected files. Send a normal prompt or remove the files.",
+      });
+      return false;
+    }
+    const previous = get().prefs.drafts[tabId] ?? "";
+    const sequence = beginDraftSend(tabId);
+    get().setDraft(tabId, "");
+    rememberDraft(tabId, trimmed);
+    const ready = await get().ensureSession(tabId, { force: true });
+    if (!ready) {
+      restoreDraftAfterRefusal(tabId, previous, sequence);
+      return false;
+    }
+    try {
+      const result = await dispatch();
+      const accepted =
+        result === true || (typeof result === "object" && result?.outcome === "accepted");
+      if (typeof result === "object" && result !== null) {
+        await get().reconcileAttachmentSubmission(tabId, result);
+      }
+      if (accepted) return true;
+      restoreDraftAfterRefusal(tabId, previous, sequence);
+      set({ hint: "Files were not sent. Review the attachment tray for the blocking reason." });
+      return false;
+    } catch (error) {
+      restoreDraftAfterRefusal(tabId, previous, sequence);
+      get().noteFailure(error);
+      return false;
+    }
+  },
+
   sendPrompt: async (tabId, text, options = {}) => {
     const trimmedInput = text.trim();
+    // A selected managed draft owns the send: a menu, palette or direct store
+    // caller must never silently send text-only while files are retained.
+    if (hasAttachmentDraft(tabId)) {
+      set({ hint: "Files are selected — use Send to include them, or remove them first." });
+      return "refused";
+    }
     // Immediate UI refusal; `sendPromptNow` repeats it as the final backstop.
     if (contributionInputLocked(get().contributions[tabId]) && !trimmedInput.startsWith("/")) {
       set({
@@ -6329,6 +6438,10 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   },
 
   runCommandInput: async (tabId, text, options = {}) => {
+    if (hasAttachmentDraft(tabId)) {
+      set({ hint: "Commands cannot consume selected files. Send a normal prompt or remove them." });
+      return { handled: true, sent: false };
+    }
     const preferredSource = options.preferredSource;
     const context = (hostCommands: HostCommandEntry[]) =>
       resolveCommandInput(text, {
@@ -6552,9 +6665,9 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
     if (action.kind === "export") {
       const format = argument.trim().toLowerCase();
       if (format.length === 0 || format === "html") {
-        await get().exportSessionHtml(tabId);
+        get().requestExport(tabId, "html");
       } else if (format === "jsonl") {
-        await get().exportSessionJsonl(tabId);
+        get().requestExport(tabId, "jsonl");
       } else {
         set({ hint: `Unknown export format "${format}". Use /export html or /export jsonl.` });
       }
@@ -10202,6 +10315,16 @@ export const useAppStore = create<AppStateShape>()((set, get) => ({
   },
 
   setShareIncludeTranscript: (include) => set({ shareIncludeTranscript: include }),
+  requestExport: (tabId: string, format: "html" | "jsonl") =>
+    set({ pendingExport: { tabId, format } }),
+  cancelExport: () => set({ pendingExport: null }),
+  confirmExport: async () => {
+    const pending = get().pendingExport;
+    if (!pending) return;
+    set({ pendingExport: null });
+    if (pending.format === "html") await get().exportSessionHtml(pending.tabId);
+    else await get().exportSessionJsonl(pending.tabId);
+  },
 
   runBugReport: async () => {
     const api = bridge();

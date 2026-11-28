@@ -17,6 +17,7 @@ export const NAV_GROUPS = [
     sources: [
       "docs/guide/projects.md",
       "docs/guide/sessions-and-tabs.md",
+      "docs/guide/attachments.md",
       "docs/guide/providers-and-auth.md",
       "docs/guide/models-and-thinking.md",
       "docs/guide/extensions-and-packages.md",
@@ -38,6 +39,7 @@ export const NAV_GROUPS = [
       "docs/architecture/terminal.md",
       "docs/architecture/editor-and-explorer.md",
       "docs/architecture/host-protocol.md",
+      "docs/architecture/document-conversion.md",
       "docs/architecture/extension-ui.md",
       "docs/architecture/session-parity.md",
       "docs/architecture/source-control.md",

@@ -1,3 +1,5 @@
+import type { AttachmentTranscriptCard } from "../../../shared/attachments";
+import { isAttachmentId, validateAttachmentTranscriptCard } from "../../../shared/attachments";
 import type { SessionEventEntry } from "../../../shared/session-ipc";
 import { hashPromptText } from "../../../shared/prompt-origin";
 import { readQueueOriginList, type QueueEntryOrigin } from "../../../shared/queue-origin";
@@ -78,6 +80,11 @@ export interface TranscriptMessage {
    * means the body is the expanded instruction, not text the user typed.
    */
   promptOrigin?: string;
+  /** Host-correlated attachment send identity; renderer events never invent it. */
+  attachmentTurnId?: string;
+  attachmentAttemptId?: string;
+  /** Safe projection of a persisted SDK custom association entry. */
+  attachmentCard?: AttachmentTranscriptCard;
 }
 
 export interface TranscriptToolRun {
@@ -333,7 +340,7 @@ export function messageFromSdk(message: unknown, id: string = nextId("msg")): Tr
       : role === "compactionSummary" || role === "branchSummary"
         ? asString(record.summary)
         : record.content;
-  return {
+  const transcriptMessage: TranscriptMessage = {
     id,
     role: mappedRole,
     blocks: blocksFromContent(text),
@@ -350,6 +357,9 @@ export function messageFromSdk(message: unknown, id: string = nextId("msg")): Tr
       ? { promptOrigin: record.promptOrigin }
       : {}),
   };
+  const attachmentCard = validateAttachmentTranscriptCard(record.desktopAttachmentCard);
+  if (attachmentCard) transcriptMessage.attachmentCard = attachmentCard;
+  return transcriptMessage;
 }
 
 function withItems(state: TranscriptState, items: TranscriptItem[]): TranscriptState {
@@ -747,15 +757,16 @@ export function reduceSessionEvents(
         const raw = asRecord(payload.message);
         const id = asString(raw.id) || nextId("msg");
         const promptOrigin = asString(payload.promptOrigin);
-        next = appendItem(next, {
-          kind: "message",
-          id,
-          message: {
-            ...messageFromSdk(payload.message, id),
-            streaming: raw.role === "assistant",
-            ...(promptOrigin.length > 0 ? { promptOrigin } : {}),
-          },
-        });
+        const attachmentTurnId = asString(payload.attachmentTurnId);
+        const attachmentAttemptId = asString(payload.attachmentAttemptId);
+        const startedMessage = messageFromSdk(payload.message, id);
+        startedMessage.streaming = raw.role === "assistant";
+        if (promptOrigin.length > 0) startedMessage.promptOrigin = promptOrigin;
+        if (isAttachmentId(attachmentTurnId)) startedMessage.attachmentTurnId = attachmentTurnId;
+        if (isAttachmentId(attachmentAttemptId)) {
+          startedMessage.attachmentAttemptId = attachmentAttemptId;
+        }
+        next = appendItem(next, { kind: "message", id, message: startedMessage });
         // A `!` command may sit beside a streaming assistant message: it is
         // opened and closed by its own id, so the next `message_end` of the
         // assistant still resolves to the assistant (plan step 7).
@@ -1151,6 +1162,38 @@ export function hydrateMessages(
     }
   }
   return applyPromptOrigins(next, promptOrigins);
+}
+
+/** Reconciles an accepted SDK association onto its exact live message turn. */
+export function applyAttachmentTranscriptCard(
+  state: TranscriptState,
+  card: AttachmentTranscriptCard,
+): TranscriptState {
+  const entryIndex = state.messageIndex[card.userEntryId];
+  const turnIndex = state.items.findIndex(
+    (item) => item.kind === "message" && item.message.attachmentTurnId === card.turnId,
+  );
+  const index = entryIndex ?? (turnIndex < 0 ? undefined : turnIndex);
+  if (index === undefined) return state;
+  const item = state.items[index];
+  if (item?.kind !== "message" || item.message.role !== "user") return state;
+  const collision = state.messageIndex[card.userEntryId];
+  if (collision !== undefined && collision !== index) return state;
+  const items = [...state.items];
+  items[index] = {
+    kind: "message",
+    id: card.userEntryId,
+    message: { ...item.message, id: card.userEntryId, attachmentCard: card },
+  };
+  const messageIndex = { ...state.messageIndex };
+  if (item.id !== card.userEntryId) delete messageIndex[item.id];
+  messageIndex[card.userEntryId] = index;
+  return {
+    ...state,
+    items,
+    messageIndex,
+    entryIds: { ...state.entryIds, [card.userEntryId]: true },
+  };
 }
 
 /** Text blocks of a built transcript message, joined as the display does. */

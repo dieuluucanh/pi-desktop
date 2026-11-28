@@ -49,6 +49,7 @@ interface Recording {
   workspaceCalls: { kind: string; input?: unknown }[];
   sessionCalls: { kind: string; arg?: unknown }[];
   sessionRequestCalls: { tabId: string; method: string; params?: unknown }[];
+  attachmentCalls: { kind: string; senderId: number; arg?: unknown }[];
   tuiFocusCalls: { windowId: number; tabId: string | null }[];
 }
 
@@ -92,6 +93,7 @@ async function register(recording: Recording): Promise<void> {
     pickDirectory: async () => null,
     pickFile: async () => null,
     shareSession: async () => ({}),
+    exportSanitizedTranscript: async () => ({ ok: false, error: "cancelled" }),
     shareBugReport: async () => ({}),
     openEditor: async () => ({}),
     revealPath: () => true,
@@ -168,11 +170,98 @@ async function register(recording: Recording): Promise<void> {
       restart: async () => envelope(),
       stop: async () => envelope(),
       ensure: async () => envelope(),
-      request: async ({ tabId, method, params }) => {
-        recording.sessionRequestCalls.push({ tabId, method, params });
+      request: async (input) => {
+        recording.sessionRequestCalls.push({
+          tabId: input.tabId,
+          method: input.method,
+          params: input.params,
+        });
+        recording.sessionCalls.push({ kind: "request", arg: input });
         return null;
       },
       deleteSession: async () => ({ ok: true }) as never,
+    },
+    attachments: {
+      isTrustedSender: (senderId) => senderId === 10,
+      openDraft: async (senderId, tabId, draftId) => {
+        recording.attachmentCalls.push({ kind: "openDraft", senderId, arg: { tabId, draftId } });
+        return { tabId, draftId: "123e4567-e89b-42d3-a456-426614174000", token: "grant" };
+      },
+      closeDraft: async (senderId, draft) => {
+        recording.attachmentCalls.push({ kind: "closeDraft", senderId, arg: draft });
+      },
+      pick: async (senderId, draft) => {
+        recording.attachmentCalls.push({ kind: "pick", senderId, arg: draft });
+        return null;
+      },
+      begin: async (senderId, input) => {
+        recording.attachmentCalls.push({ kind: "begin", senderId, arg: input });
+        return { attachmentId: "attachment", token: "grant" };
+      },
+      append: async () => 0,
+      commit: async () => ({ id: "attachment", name: "a", mimeType: "text/plain", size: 0 }),
+      cancel: async () => {},
+      list: async () => [],
+      preview: async () => ({
+        bytes: new Uint8Array(),
+        size: 0,
+        truncated: false,
+        kind: "text",
+        mimeType: "text/plain",
+      }),
+      remove: async () => {},
+      deliver: async (senderId, input) => {
+        recording.attachmentCalls.push({ kind: "deliver", senderId, arg: input });
+        return {
+          outcome: "blocked",
+          reasons: ["busy"],
+          turnId: input.turnId,
+          attemptId: input.attemptId,
+        };
+      },
+      status: async (senderId, input) => {
+        recording.attachmentCalls.push({ kind: "status", senderId, arg: input });
+        return {
+          version: 1,
+          phase: "none",
+          turnId: null,
+          attemptId: null,
+          result: null,
+          retryOfAttemptId: null,
+          textMatches: false,
+          filesMatch: false,
+          originalIds: [],
+          representationIds: [],
+          updatedAt: null,
+        };
+      },
+      readiness: async (senderId, draft, attachmentIds, text) => {
+        recording.attachmentCalls.push({
+          kind: "status",
+          senderId,
+          arg: { draft, attachmentIds, text },
+        });
+        return {
+          version: 1,
+          outcome: "blocked",
+          files: [],
+          reasons: ["unavailable"],
+          estimatedTokens: 0,
+          model: null,
+          revision: "unavailable",
+        };
+      },
+      storage: async () => null,
+      clearStorage: async () => ({
+        clearedAt: 0,
+        paused: null,
+        assetsRemoved: 0,
+        staleStagingRemoved: 0,
+        bytesFreed: 0,
+        errors: 0,
+      }),
+      exportBundle: async () => ({ ok: false, error: "cancelled" }),
+      importBundle: async () => ({ ok: false, error: "cancelled" }),
     },
     projects: {
       get: async () => projects(),
@@ -401,6 +490,7 @@ beforeEach(async () => {
     workspaceCalls: [],
     sessionCalls: [],
     sessionRequestCalls: [],
+    attachmentCalls: [],
     tuiFocusCalls: [],
   };
   liveTabIds = ["t1"];
@@ -409,6 +499,151 @@ beforeEach(async () => {
   heldClose = null;
   releaseHeldClose = null;
   await register(recording);
+});
+
+describe("attachment IPC trust boundary", () => {
+  it("accepts only the trusted main frame and a live tab", async () => {
+    const handler = handlers.get(IPC.attachmentsOpenDraft)!;
+    const frame = {};
+    const event = { sender: { id: 10, mainFrame: frame }, senderFrame: frame };
+    const draftId = "123e4567-e89b-42d3-a456-426614174001";
+    await expect(handler(event, "t1", draftId)).resolves.toEqual({
+      tabId: "t1",
+      draftId: "123e4567-e89b-42d3-a456-426614174000",
+      token: "grant",
+    });
+    expect(recording.attachmentCalls).toEqual([
+      { kind: "openDraft", senderId: 10, arg: { tabId: "t1", draftId } },
+    ]);
+    expect(() => handler(event, "control")).toThrow(/control host/);
+    expect(() => handler(event, "missing")).toThrow(/unknown tab/);
+    expect(() =>
+      handler({ sender: { id: 11, mainFrame: frame }, senderFrame: frame }, "t1"),
+    ).toThrow(/untrusted renderer/);
+    expect(() => handler({ sender: { id: 10, mainFrame: frame }, senderFrame: {} }, "t1")).toThrow(
+      /untrusted renderer/,
+    );
+    expect(() => handler({}, "t1")).toThrow(/untrusted renderer/);
+    expect(recording.attachmentCalls).toHaveLength(1);
+  });
+
+  it("closes only an authenticated attachment draft through its dedicated route", async () => {
+    const handler = handlers.get(IPC.attachmentsCloseDraft)!;
+    const frame = {};
+    const event = { sender: { id: 10, mainFrame: frame }, senderFrame: frame };
+    const draft = {
+      tabId: "t1",
+      draftId: "123e4567-e89b-42d3-a456-426614174000",
+      token: "123e4567-e89b-42d3-a456-426614174001",
+    };
+    await expect(handler(event, draft)).resolves.toBeUndefined();
+    expect(recording.attachmentCalls).toEqual([{ kind: "closeDraft", senderId: 10, arg: draft }]);
+    expect(() => handler({}, draft)).toThrow(/untrusted renderer/);
+  });
+
+  it("routes only validated attachment intent through the trusted private delivery channel", async () => {
+    const frame = {};
+    const event = { sender: { id: 10, mainFrame: frame }, senderFrame: frame };
+    const input = {
+      draft: {
+        tabId: "t1",
+        draftId: "123e4567-e89b-42d3-a456-426614174000",
+        token: "123e4567-e89b-42d3-a456-426614174001",
+      },
+      attachmentIds: ["123e4567-e89b-42d3-a456-426614174004"],
+      turnId: "123e4567-e89b-42d3-a456-426614174000",
+      attemptId: "123e4567-e89b-42d3-a456-426614174005",
+      explicitRetry: false,
+      text: "please inspect",
+    };
+    await expect(handlers.get(IPC.attachmentsSubmit)!(event, input)).resolves.toMatchObject({
+      outcome: "blocked",
+      reasons: ["busy"],
+    });
+    expect(recording.attachmentCalls).toEqual([
+      {
+        kind: "deliver",
+        senderId: 10,
+        arg: input,
+      },
+    ]);
+    expect(() =>
+      handlers.get(IPC.attachmentsSubmit)!(event, { ...input, path: "C:/secret" }),
+    ).toThrow(/invalid delivery request/);
+    expect(() => handlers.get(IPC.attachmentsSubmit)!(event, { ...input, text: "\ud800" })).toThrow(
+      /invalid delivery request/,
+    );
+    expect(() => handlers.get(IPC.attachmentsSubmit)!({}, input)).toThrow(/untrusted renderer/);
+    expect(recording.attachmentCalls).toHaveLength(1);
+  });
+
+  it("forwards a validated attachment status request without reading file content", async () => {
+    const frame = { url: "file:///app/index.html" };
+    const event = { sender: { id: 10, mainFrame: frame }, senderFrame: frame };
+    const input = {
+      draft: {
+        tabId: "t1",
+        draftId: "123e4567-e89b-42d3-a456-426614174000",
+        token: "123e4567-e89b-42d3-a456-426614174001",
+      },
+      text: "please inspect",
+      attachmentIds: ["123e4567-e89b-42d3-a456-426614174004"],
+    };
+    await expect(handlers.get(IPC.attachmentsStatus)!(event, input)).resolves.toMatchObject({
+      phase: "none",
+    });
+    expect(recording.attachmentCalls).toContainEqual({ kind: "status", senderId: 10, arg: input });
+    expect(() =>
+      handlers.get(IPC.attachmentsStatus)!(event, { ...input, path: "C:/secret" }),
+    ).toThrow(/invalid status request/);
+    expect(() => handlers.get(IPC.attachmentsStatus)!({}, input)).toThrow(/untrusted renderer/);
+  });
+
+  it("does not allow private transfer operations through the generic session request", () => {
+    for (const method of [
+      "attachments.transfer.begin",
+      "attachments.transfer.chunk",
+      "attachments.transfer.seal",
+      "attachments.transfer.cancel",
+    ]) {
+      expect(() => invoke(IPC.sessionRequest, { tabId: "t1", method, params: {} })).toThrow(
+        /authorized route/,
+      );
+    }
+    expect(recording.sessionCalls).toEqual([]);
+  });
+
+  it("does not allow attachment delivery through the generic session request", async () => {
+    expect(() =>
+      invoke(IPC.sessionRequest, {
+        tabId: "t1",
+        method: "attachments.prompt",
+        params: { version: 1, planId: "forged", turnId: "forged", text: "hello" },
+      }),
+    ).toThrow(/authorized route/);
+    expect(recording.sessionCalls).toEqual([]);
+    const ordinary = { tabId: "t1", method: "prompt", params: { message: "hello" } };
+    await invoke(IPC.sessionRequest, ordinary);
+    expect(recording.sessionCalls).toEqual([{ kind: "request", arg: ordinary }]);
+  });
+
+  it("rejects an untrusted frame on every attachment channel", () => {
+    for (const key of [
+      IPC.attachmentsOpenDraft,
+      IPC.attachmentsPick,
+      IPC.attachmentsBegin,
+      IPC.attachmentsAppend,
+      IPC.attachmentsCommit,
+      IPC.attachmentsCancel,
+      IPC.attachmentsList,
+      IPC.attachmentsPreview,
+      IPC.attachmentsRemove,
+      IPC.attachmentsSubmit,
+    ]) {
+      expect(() => handlers.get(key)!({}, "t1")).toThrow(/untrusted renderer/);
+    }
+    expect(recording.attachmentCalls).toEqual([]);
+  });
 });
 
 describe("office bridge control channels", () => {

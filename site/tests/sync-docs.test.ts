@@ -22,7 +22,7 @@ const currentVersion = packageJson.version;
 describe("docs sync", () => {
   it("maps every docs source and keeps the release routes dotted", () => {
     const manifest = syncDocs({ validate: true });
-    expect(manifest.docs).toHaveLength(52);
+    expect(manifest.docs).toHaveLength(54);
     expect(manifest.releases).toHaveLength(17);
     expect(manifest.version).toBe(currentVersion);
     expect(manifest.docs.map((doc: { route: string }) => doc.route)).toEqual(
