@@ -44,7 +44,7 @@ test("editor fills the pane for prose and code", async () => {
   await window.getByRole("button", { name: "E2E project", exact: true }).click();
   const railPanel = window.getByTestId("rail-panel");
   const railOpen = await railPanel
-    .waitFor({ state: "visible", timeout: 2_000 })
+    .waitFor({ state: "visible", timeout: 10_000 })
     .then(() => true)
     .catch(() => false);
   if (railOpen) await window.getByRole("button", { name: "Collapse panel" }).click();

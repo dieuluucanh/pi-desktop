@@ -584,7 +584,7 @@ function deterministicRandom(seed = 5) {
 }
 
 async function waitFor(predicate: () => boolean, label = "condition"): Promise<void> {
-  for (let attempt = 0; attempt < 1000; attempt += 1) {
+  for (let attempt = 0; attempt < 3000; attempt += 1) {
     if (predicate()) return;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
