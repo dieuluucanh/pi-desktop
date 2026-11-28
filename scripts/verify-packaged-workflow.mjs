@@ -124,7 +124,7 @@ const HELP = `Verify the packaged/offline Workflow surface (plan step 39)
   --resources <dir>  packaged resources dir (alternative to --dir)
   --root <dir>       repository root for the lock file (default: this checkout)
   --platform <p>     win32 | darwin | linux (default: this machine)
-  --arch <a>         x64 | arm64 (default: this machine)
+  --arch <a>         x64 | arm64 (must match the package; default: this machine)
   --node <file>      override the bundled Node binary
   --timeout <ms>     per-host request timeout (default: 60000)
   --keep             keep the temporary profile/override dirs for inspection
@@ -210,6 +210,49 @@ export function packagedPaths(resourcesDir, platform = process.platform, arch = 
     // `app.asar.unpacked/node_modules` on an installed machine.
     unpackedExtensionsDir: join(resourcesDir, "app.asar.unpacked", "out", "extensions", "workflow"),
   };
+}
+
+/**
+ * The `runtime/node/<platform>-*` directories the package actually contains.
+ * The release gate asks for one arch; this is how a mismatch is named.
+ */
+export function availableRuntimes(resourcesDir, platform = process.platform) {
+  const nodeRoot = join(resourcesDir, "runtime", "node");
+  if (!existsSync(nodeRoot)) return [];
+  return readdirSync(nodeRoot)
+    .filter((name) => name.startsWith(`${platform}-`))
+    .sort();
+}
+
+/**
+ * Refuses a package that does not carry the runtime it was asked to verify.
+ *
+ * afterPack prunes each bundle to one runtime, so verifying an x64 package with
+ * the arm64 interpreter (or vice versa) is only legal through an explicit
+ * `--node` override. Throwing here, before `mkdtempSync`, keeps the failure one
+ * actionable line and leaks no temp profile.
+ */
+export function requireBundledNode(paths, { platform, arch, override = null }) {
+  if (existsSync(paths.nodePath)) return;
+  if (override) {
+    throw new Error(`verify:packaged-workflow: --node does not exist at ${override}`);
+  }
+  const runtimes = availableRuntimes(paths.resourcesDir, platform);
+  const wanted = `${platform}-${arch}`;
+  const prefix = `verify:packaged-workflow: no bundled Node at ${paths.nodePath} for ${wanted}`;
+  if (runtimes.length === 0) {
+    throw new Error(`${prefix}; the package has no runtime/node/${platform}-* directory`);
+  }
+  if (runtimes.length === 1) {
+    const other = runtimes[0].slice(platform.length + 1);
+    throw new Error(
+      `${prefix}; the package contains ${runtimes[0]}; pass --arch ${other} (or --node <path>)`,
+    );
+  }
+  const arches = runtimes.map((name) => name.slice(platform.length + 1));
+  throw new Error(
+    `${prefix}; the package contains ${runtimes.join(", ")}; pass --arch <${arches.join("|")}> (or --node <path>)`,
+  );
 }
 
 /**
@@ -307,8 +350,12 @@ export function startHost({ nodePath, hostBundle, cwd, env, timeoutMs = 60_000 }
   let stdout = "";
   let nextId = 1;
   let failure = null;
+  let settled = false;
+  let spawnFailed = false;
 
   const settleAll = (error) => {
+    if (settled) return;
+    settled = true;
     failure = error;
     for (const [id, waiter] of pending) {
       pending.delete(id);
@@ -317,6 +364,8 @@ export function startHost({ nodePath, hostBundle, cwd, env, timeoutMs = 60_000 }
     }
   };
 
+  // A post-spawn EPIPE must not surface as an unhandled 'error' event.
+  child.stdin?.on("error", () => undefined);
   child.stdout.setEncoding("utf8");
   child.stdout.on("data", (chunk) => {
     stdout += chunk;
@@ -349,7 +398,10 @@ export function startHost({ nodePath, hostBundle, cwd, env, timeoutMs = 60_000 }
     stderr.push(String(chunk));
     if (stderr.length > 200) stderr.shift();
   });
-  child.on("error", (error) => settleAll(error));
+  child.on("error", (error) => {
+    spawnFailed = true;
+    settleAll(error);
+  });
   child.on("exit", (code, signal) =>
     settleAll(new Error(`the packaged host exited (${code ?? signal ?? "unknown"})`)),
   );
@@ -366,6 +418,13 @@ export function startHost({ nodePath, hostBundle, cwd, env, timeoutMs = 60_000 }
         rej(new Error(`timed out after ${timeoutMs} ms waiting for ${method}`));
       }, timeoutMs);
       timer.unref?.();
+      const stdin = child.stdin;
+      if (!stdin) {
+        pending.delete(id);
+        clearTimeout(timer);
+        rej(new Error(`no stdin to send ${method} to the packaged host`));
+        return;
+      }
       pending.set(id, {
         resolve: (value) => {
           clearTimeout(timer);
@@ -377,14 +436,16 @@ export function startHost({ nodePath, hostBundle, cwd, env, timeoutMs = 60_000 }
         },
         timer,
       });
-      child.stdin.write(`${JSON.stringify({ id, method, params })}\n`);
+      stdin.write(`${JSON.stringify({ id, method, params })}\n`);
     });
 
   return {
     request,
     async close() {
+      // A failed spawn never emits `exit`; do not wait for one.
+      if (spawnFailed || child.pid === undefined) return stderr.join("");
       try {
-        child.stdin.end();
+        child.stdin?.end();
       } catch {
         // Already closed; the exit below is what matters.
       }
@@ -530,6 +591,7 @@ export async function runChecks(options) {
   } = options;
   const paths = packagedPaths(resourcesDir, platform, arch);
   if (options.nodePath) paths.nodePath = options.nodePath;
+  requireBundledNode(paths, { platform, arch, override: options.nodePath ?? null });
   const lockPath = join(root, WORKFLOW_LOCK_FILE);
   const lock = JSON.parse(readFileSync(lockPath, "utf8"));
   const tempDir = mkdtempSync(join(tmpdir(), "pi-packaged-workflow-"));
@@ -721,9 +783,21 @@ export async function runChecks(options) {
               stdio: ["ignore", "pipe", "pipe"],
             });
             const out = [];
-            child.stdout.on("data", (chunk) => out.push(String(chunk)));
-            child.stderr.on("data", (chunk) => out.push(String(chunk)));
-            child.on("exit", (code) => res({ code, output: out.join("") }));
+            let settled = false;
+            const settle = (result) => {
+              if (settled) return;
+              settled = true;
+              res(result);
+            };
+            child.stdout?.on("data", (chunk) => out.push(String(chunk)));
+            child.stderr?.on("data", (chunk) => out.push(String(chunk)));
+            // A failed spawn emits 'error', never 'exit'; resolve the row with
+            // the error text instead of hanging or throwing unhandled.
+            child.on("error", (error) => {
+              out.push(`${error instanceof Error ? error.message : String(error)}\n`);
+              settle({ code: null, output: out.join("") });
+            });
+            child.on("exit", (code) => settle({ code, output: out.join("") }));
           });
         const version = await run(["--version"]);
         expect(

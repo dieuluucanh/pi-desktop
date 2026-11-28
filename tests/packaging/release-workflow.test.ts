@@ -295,6 +295,31 @@ describe("release workflow", () => {
     expect(job("macos")).toContain("--arch x64");
   });
 
+  it("verifies each macOS bundle with its own runtime", () => {
+    const macos = job("macos");
+    const start = macos.indexOf("- name: Verify the packaged Workflow bundle");
+    const end = macos.indexOf("- name: Inspect the failed package attempt");
+    expect(start, "the packaged Workflow step exists").toBeGreaterThan(-1);
+    expect(end, "the failure-inspection step follows it").toBeGreaterThan(start);
+    const block = macos.slice(start, end);
+    for (const needle of [
+      '--resources "$arm_app/Contents/Resources"',
+      "--arch arm64",
+      '--resources "$x64_app/Contents/Resources"',
+      "--arch x64",
+      'test -f "$x64_node"',
+      "arch -x86_64 /usr/bin/true",
+      'arch -x86_64 "$x64_node" --version',
+      "--timeout 180000",
+      '--node "$arm_node"',
+    ]) {
+      expect(block, needle).toContain(needle);
+    }
+    // The same-arch jobs keep their simple --dir invocation.
+    expect(job("windows")).toContain("workflow:package:verify -- --dir release/win-unpacked");
+    expect(job("linux")).toContain('workflow:package:verify -- --dir "$app_dir"');
+  });
+
   it("checks the bundled Pi agent before building, and never blocks on a fresh publish", () => {
     expect(yaml).toMatch(/require_latest_pi:\n(?:.*\n)*? {8}default: false/);
     expect(yaml).toContain("Fail when the bundled Pi agent is behind the latest published version");

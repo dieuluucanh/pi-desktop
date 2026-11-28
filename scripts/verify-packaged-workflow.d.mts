@@ -43,6 +43,18 @@ export function packagedPaths(
   arch?: string,
 ): PackagedPaths;
 
+/** The `runtime/node/<platform>-*` directories the package contains. */
+export function availableRuntimes(resourcesDir: string, platform?: string): string[];
+
+export interface BundledNodeRequest {
+  platform: string;
+  arch: string;
+  override?: string | null;
+}
+
+/** Refuses a package that does not carry the runtime it was asked to verify. */
+export function requireBundledNode(paths: PackagedPaths, request: BundledNodeRequest): void;
+
 /** The staged directory a packaged main would hand the host. */
 export function packagedBundleDir(paths: PackagedPaths): string;
 
@@ -59,6 +71,22 @@ export interface PackagedEnvOptions {
 
 /** A minimal env: no developer profile, no system toolchain, no network path. */
 export function packagedEnv(options: PackagedEnvOptions): Record<string, string>;
+
+export interface StartHostOptions {
+  nodePath: string;
+  hostBundle: string;
+  cwd: string;
+  env: Record<string, string>;
+  timeoutMs?: number;
+}
+
+export interface PackagedHost {
+  request(method: string, params?: unknown): Promise<unknown>;
+  close(): Promise<string>;
+}
+
+/** Minimal JSONL driver for the packaged host protocol. */
+export function startHost(options: StartHostOptions): PackagedHost;
 
 export interface PackagedArtifactInput {
   extensionsDir: string;

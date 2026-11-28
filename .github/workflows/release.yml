@@ -675,12 +675,30 @@ jobs:
       - name: Verify the packaged Workflow bundle
         run: |
           set -euo pipefail
-          for app in \
-            "release/mac-arm64/Pi Desktop.app" \
-            "release/mac/Pi Desktop.app"; do
+          arm_app="release/mac-arm64/Pi Desktop.app"
+          x64_app="release/mac/Pi Desktop.app"
+          arm_node="$arm_app/Contents/Resources/runtime/node/darwin-arm64/bin/node"
+          x64_node="$x64_app/Contents/Resources/runtime/node/darwin-x64/bin/node"
+
+          npm run workflow:package:verify -- \
+            --resources "$arm_app/Contents/Resources" --platform darwin --arch arm64
+
+          # afterPack prunes each bundle to its own runtime. The x64 app's node is
+          # a thin x64 binary: it only runs under Rosetta, which the hosted image
+          # does not install. Verify the bundle content either way.
+          test -f "$x64_node"
+          if arch -x86_64 /usr/bin/true >/dev/null 2>&1; then
+            arch -x86_64 "$x64_node" --version
             npm run workflow:package:verify -- \
-              --resources "$app/Contents/Resources"
-          done
+              --resources "$x64_app/Contents/Resources" --platform darwin --arch x64 \
+              --timeout 180000
+          else
+            echo "::warning::Rosetta is unavailable; x64 Workflow bundle verified with the arm64 interpreter"
+            echo "x64 Workflow bundle: arm64 interpreter; its own darwin-x64 node was present but not executed" >> "$GITHUB_STEP_SUMMARY"
+            npm run workflow:package:verify -- \
+              --resources "$x64_app/Contents/Resources" --platform darwin --arch x64 \
+              --timeout 180000 --node "$arm_node"
+          fi
 
       - name: Inspect the failed package attempt
         if: failure()

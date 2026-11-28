@@ -8,12 +8,15 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   REQUIRED_PARITY_COMMANDS,
   REQUIRED_REFINEMENT_COMMANDS,
+  availableRuntimes,
   checkPackagedArtifact,
   contributedCommands,
   packagedEnv,
   packagedPaths,
   parseVerifyArgs,
+  requireBundledNode,
   resourcesDirFor,
+  startHost,
   workflowRegistrations,
 } from "../../scripts/verify-packaged-workflow.mjs";
 import { WORKFLOW_STAGE_DIR, WORKFLOW_LOCK_FILE } from "../../scripts/workflow-bundle.mjs";
@@ -201,6 +204,73 @@ describe("registration counting", () => {
     expect(REQUIRED_PARITY_COMMANDS).toContain("orchestrator");
     expect(REQUIRED_PARITY_COMMANDS).not.toContain("review-abort");
     expect(new Set(REQUIRED_PARITY_COMMANDS).size).toBe(REQUIRED_PARITY_COMMANDS.length);
+  });
+});
+
+describe("bundled Node preflight", () => {
+  /** A resources dir whose only runtime is `runtime/node/<platform>-<arch>`. */
+  function packageWithRuntime(platform: string, arch: string): string {
+    const resources = tempDir();
+    const bin = join(resources, "runtime", "node", `${platform}-${arch}`, "bin");
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(join(bin, "node"), "");
+    return resources;
+  }
+
+  it("accepts the runtime the package actually contains", () => {
+    const resources = packageWithRuntime("darwin", "x64");
+    const paths = packagedPaths(resources, "darwin", "x64");
+    expect(availableRuntimes(resources, "darwin")).toEqual(["darwin-x64"]);
+    expect(() => requireBundledNode(paths, { platform: "darwin", arch: "x64" })).not.toThrow();
+  });
+
+  it("rejects the wrong arch and names the runtime the package contains", () => {
+    const resources = packageWithRuntime("darwin", "x64");
+    const paths = packagedPaths(resources, "darwin", "arm64");
+    expect(() => requireBundledNode(paths, { platform: "darwin", arch: "arm64" })).toThrow(
+      /contains darwin-x64; pass --arch x64/,
+    );
+  });
+
+  it("names the missing runtime directory when the package carries none", () => {
+    const resources = tempDir();
+    const paths = packagedPaths(resources, "darwin", "arm64");
+    expect(availableRuntimes(resources, "darwin")).toEqual([]);
+    expect(() => requireBundledNode(paths, { platform: "darwin", arch: "arm64" })).toThrow(
+      /runtime\/node\/darwin-\*/,
+    );
+  });
+
+  it("names a missing --node override", () => {
+    const resources = tempDir();
+    const override = join(resources, "missing-node");
+    const paths = packagedPaths(resources, "darwin", "x64");
+    expect(() => requireBundledNode(paths, { platform: "darwin", arch: "x64", override })).toThrow(
+      /--node does not exist at .*missing-node/,
+    );
+  });
+
+  it("rejects promptly when the bundled Node is gone, and close() does not wait for exit", async () => {
+    const resources = tempDir();
+    const missing = join(resources, "runtime", "node", "darwin-x64", "bin", "node");
+    const host = startHost({
+      nodePath: missing,
+      hostBundle: join(resources, "host.mjs"),
+      cwd: resources,
+      env: packagedEnv({
+        tempDir: resources,
+        agentDir: join(resources, "agent"),
+        blobDir: join(resources, "blobs"),
+        platform: process.platform,
+      }),
+      timeoutMs: 10_000,
+    });
+    const started = Date.now();
+    await expect(host.request("host.hello")).rejects.toThrow();
+    // It settled on the spawn failure, not on the request timeout.
+    expect(Date.now() - started).toBeLessThan(2_000);
+    // A failed spawn never emits `exit`; close() must still resolve.
+    await expect(host.close()).resolves.toEqual(expect.any(String));
   });
 });
 
