@@ -63,6 +63,18 @@ Every build stages the pinned Workflow tarball after the host build:
   Windows, Linux and macOS jobs, then `npm run workflow:package:verify` against
   each packaged app so an installer that lost the bundle fails before upload.
 
+`workflow:package:verify` (`scripts/verify-packaged-workflow.mjs`) runs the
+packaged bytes: the bundled Node, the unpacked host bundle and a clean profile,
+with an empty `PATH` and a closed-port proxy. It takes the architecture from
+`--arch` (or the host), because `afterPack` prunes every bundle to one
+`runtime/node/<platform>-<arch>`. A package that does not carry the runtime it
+was asked to verify is rejected before any temporary profile is created, with a
+message naming the runtime the package actually contains — for example
+`no bundled Node at …/runtime/node/darwin-x64/bin/node for darwin-x64; the
+package contains darwin-arm64; pass --arch arm64 (or --node <path>)`. Verifying
+one architecture's package with another architecture's interpreter is therefore
+only legal through an explicit `--node` override.
+
 ## Network resilience
 
 A release performs several kinds of network work: `npm ci` (registry tarballs and,
@@ -199,6 +211,21 @@ signature, so the job requires:
 - `build-info.json` to report `channel: "release"` and `macSigning: "adhoc"`;
 - the packaged `node-pty` tree to carry the idempotent helper-path patch, and its
   `spawn-helper` to exist, be executable and be signed.
+
+Each `.app` is verified with the architecture it carries: the arm64 bundle
+(`release/mac-arm64`) with `--arch arm64`, the x64 bundle (`release/mac`) with
+`--arch x64`. `afterPack` prunes each to its own runtime, so the x64 package holds
+only `runtime/node/darwin-x64`, and asking the verifier for `--arch arm64` on it is
+a rejection, not a test failure. The x64 interpreter is a thin x64 binary that only
+runs under Rosetta, which the hosted image does not install: when
+`arch -x86_64 /usr/bin/true` succeeds the job warms the translation with
+`arch -x86_64 "$x64_node" --version` and runs the verifier with the same 180 s
+budget the PTY step uses; otherwise it asserts the packaged `darwin-x64` Node is
+present but does not execute it, verifies the bundle with the arm64 interpreter
+through `--node "$arm_node"`, and records the substitution as a `::warning::` plus
+a step-summary line. Both paths still check the bundle content and its twelve
+acceptance rows; only which interpreter starts the packaged host depends on
+Rosetta.
 
 The PTY smoke opens a real shell from the **arm64** bundle. The runner is arm64, so the
 x64 bundle only runs when Rosetta is installed; the job exercises it when
