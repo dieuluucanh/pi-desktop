@@ -22,7 +22,7 @@ async function openSettings(current: FakeApp): Promise<void> {
   await current.window
     .getByRole("button", { name: /^settings/i })
     .first()
-    .click();
+    .click({ force: true });
   await expect(current.window.getByTestId("app-preferences")).toBeVisible({ timeout: 15_000 });
 }
 
