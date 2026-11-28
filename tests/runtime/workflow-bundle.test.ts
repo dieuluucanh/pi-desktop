@@ -11,6 +11,7 @@ import {
   workflowBundleCandidates,
   type WorkflowBundleEnvironment,
 } from "../../src/main/runtime/workflow-bundle";
+import { findCheckoutReferences } from "../../scripts/workflow-bundle.mjs";
 
 /**
  * The bundled Workflow location (plan step 26).
@@ -214,5 +215,17 @@ describe("the staged document on disk", () => {
     });
     expect(resolution).toMatchObject({ ok: true, source: "override", dir });
     expect(isUsableWorkflowBundle(resolution)).toBe(true);
+  });
+});
+
+describe("checkout references", () => {
+  it("ignores a path in a comment but flags a path literal", () => {
+    const files = ["a.ts"];
+    expect(
+      findCheckoutReferences(files, () => "// C:\\Users\\RUNNER~1\\tmp\nconst ok = 1;\n"),
+    ).toEqual([]);
+    expect(
+      findCheckoutReferences(files, () => 'const path = "C:\\Users\\x";\n'),
+    ).toEqual([{ file: "a.ts", needle: "C:\\Users\\" }]);
   });
 });

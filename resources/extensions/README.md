@@ -15,7 +15,7 @@ file):
 
 ```bash
 # Stage from a locally supplied, already-verified W tarball:
-npm run workflow:stage -- --tarball ../pi-workflow/dieulc-workflow-0.13.0.tgz
+npm run workflow:stage -- --tarball ../pi-workflow/dieulc-workflow-0.17.5.tgz
 
 # Or fetch the explicitly pinned release artifact (nothing else is downloaded):
 npm run workflow:stage

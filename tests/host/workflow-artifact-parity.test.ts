@@ -507,15 +507,15 @@ const POLICY_COMMANDS = [
 
 /**
  * Row commands the **currently pinned** artifact does not register. The staged
- * 0.17.4 release registers the whole row set, including `/workflow` (the
+ * 0.17.5 release registers the whole row set, including `/workflow` (the
  * 0.13.0 release predated it). Keeping this an exact ledger makes the test fail
  * in both directions: a newly missing command, or a re-pin that is not
  * reflected here.
  */
 const PINNED_ARTIFACT_MISSING: readonly string[] = [];
 
-/** The local tarball version staged by row 13; 0.17.4 carries the child-todo fixes. */
-const STAGED_WORKFLOW_VERSION = "0.17.4";
+/** The local tarball version staged by row 13; 0.17.5 carries the child-todo fixes. */
+const STAGED_WORKFLOW_VERSION = "0.17.5";
 
 describe.skipIf(!existsSync(ARTIFACT_ENTRY))(
   "staged Workflow artifact: command/mode/config/policy parity",
@@ -620,7 +620,7 @@ describe.skipIf(!existsSync(ARTIFACT_ENTRY))(
         expect(booted.statusValue("workflow")).toMatch(/plan/);
 
         // `/workflow` is the Plan-mode entry (alias for /plan in this host).
-        // The 0.17.4 artifact registers it; the ledger above would record a
+        // The 0.17.5 artifact registers it; the ledger above would record a
         // regression to an older bundle that predates it.
         if (!PINNED_ARTIFACT_MISSING.includes("workflow")) {
           await booted.run("workflow");
@@ -1312,7 +1312,7 @@ describe.skipIf(!existsSync(ARTIFACT_ENTRY))(
     it("enters Orchestrator mode, keeps the run status read-only and dispatches nothing", async () => {
       const booted = await boot();
       try {
-        // Mode entry is display-only: 0.17.4 keeps the full Build tool set and
+        // Mode entry is display-only: 0.17.5 keeps the full Build tool set and
         // adds the three parent tools; nothing is dispatched on entry.
         await booted.run("orchestrator");
         const tools = lastToolSet(booted.pi) ?? [];
@@ -1323,7 +1323,7 @@ describe.skipIf(!existsSync(ARTIFACT_ENTRY))(
             "orchestrator_retry",
           ]),
         );
-        // The mutation gate is the tool-call hook. In 0.17.4 the parent keeps
+        // The mutation gate is the tool-call hook. In 0.17.5 the parent keeps
         // full Build authority until a run is bound and a Build child owns the
         // worktree, so an edit with no run/child is not refused here; the
         // bound-child refusal ("A Build child owns this worktree") is pinned by

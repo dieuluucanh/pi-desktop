@@ -1,13 +1,9 @@
-# Orchestrator (experimental) — release note draft
+# Orchestrator (experimental) — historical release note draft
 
-Status: **draft, not released**. No publish, tag or push has been performed.
-The app version stays `0.11.0`, and no coordinated release has been cut. The
-staged `@dieulc/workflow` is **0.17.4**, pinned by Desktop as a **local,
-unpublished tarball** — `resources/workflow/dieulc-workflow-0.17.4.tgz`, 99
-source files,
-`sha512-IwbMvsiVi8YBHno5XUNS9CcucDsgvk4USPKUFN4/zuNk7UQpvB61wPjT0tREvZe0VKKhQbhdadKVYiF77rvYiA==`,
-no release `url` or `tag` — until the user authorizes a coordinated release.
-This is not a published asset, a GitHub/npm release, or packaged acceptance.
+Status: **superseded by `docs/releases/v0.12.0.md`.** This draft is kept as
+historical evidence. `@dieulc/workflow` **0.17.5** is the published npm
+artifact pinned by Desktop; the manual/live acceptance limits below still apply.
+This note is not a new release or packaged acceptance.
 
 ## What ships
 
@@ -22,20 +18,20 @@ This is not a published asset, a GitHub/npm release, or packaged acceptance.
 - Workflow's Orchestrator mode is **opt-in and experimental**. Entering the mode
   launches nothing; ordinary Plan → Review → Build keeps its current defaults.
 
-## Pinned artifact (0.17.4, local only)
+## Pinned artifact (0.17.5, public npm)
 
-`resources/workflow.lock.json` pins `@dieulc/workflow` **0.17.4** with
-`source.kind: "tarball"`, `source.path:
-resources/workflow/dieulc-workflow-0.17.4.tgz`, 99 source files, and the
-integrity above — deliberately no `url`/`tag`. `npm run workflow:lock`,
-`workflow:stage` and `workflow:verify --offline --require-dev` staged and
-re-verified both `resources/extensions/workflow` and `out/extensions/workflow`
-from those exact local bytes. The 0.17.4 source is the W checkout work and is
-**unreleased and unpublished**; pin/stage/verify could not be run against a
-published asset. Promoting this pin to a release URL/tag is a separately
-authorized follow-up and must not be inferred from this note.
+`resources/workflow.lock.json` pins `@dieulc/workflow` **0.17.5** with
+`source.kind: "release"`,
+`source.url: https://registry.npmjs.org/@dieulc/workflow/-/workflow-0.17.5.tgz`,
+`source.tag: @dieulc/workflow@0.17.5`, 99 source files, and
+`source.integrity: sha512-B99r3Aqdd9C+pnxTNv8swFhTUUfWQb/bXasPMqNu7Xgw/6KBUJO/UNXNjuYwSMkq72aDvYgKMN0XT4pdqSOyKA==`.
+`npm run workflow:lock`, `workflow:stage` and
+`workflow:verify --offline --require-dev` staged and re-verified both
+`resources/extensions/workflow` and `out/extensions/workflow` from the
+published bytes. Packaged and live-provider acceptance remain separate and
+are **NOT RUN**.
 
-Child TODO display controls are part of this 0.17.4 artifact: the four verbs and
+Child TODO display controls are part of this 0.17.5 artifact: the four verbs and
 `/todos` target the active parent/child panel, the menu group reads `Child
 todos` in child view, an empty or headerless child keeps the verbs available
 without an invented widget, and `/todos clear` stays parent-only. These are the
@@ -72,10 +68,10 @@ arbitrary modes, cross-owner actions, stale epochs, reload, absent capabilities
 and source-bound related sessions.
 
 Not run: real provider/turn loop, real terminal automation, packaged Desktop E2E
-and live platform signoff. The same limitation applies to the local 0.17.4 pin:
-manual child TODO display acceptance and a published-asset re-verification are
-both **NOT RUN**. See the Workflow repository's
-`docs/orchestrator-live-acceptance.md`; it is currently **NOT RUN**.
+and live platform signoff. The published-asset re-verification for the 0.17.5
+pin is **DONE**; manual child TODO display acceptance remains **NOT RUN**. See
+the Workflow repository's `docs/orchestrator-live-acceptance.md`; it is
+currently **NOT RUN**.
 
 ## Promotion
 

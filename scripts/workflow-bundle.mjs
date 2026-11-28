@@ -673,8 +673,14 @@ export function findCheckoutReferences(files, read, markers = []) {
   for (const file of files) {
     if (!/\.(?:ts|mts|cts|js|mjs|cjs|json|md|txt)$/.test(String(file))) continue;
     const source = read(file);
+    // A comment can document a Windows short path without baking it into the
+    // artifact. Strip comments from code files; a path in a string literal is
+    // still caught.
+    const scan = /\.(?:ts|mts|cts|js|mjs|cjs)$/.test(String(file))
+      ? source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1")
+      : source;
     for (const needle of needles) {
-      if (source.includes(needle)) found.push({ file, needle });
+      if (scan.includes(needle)) found.push({ file, needle });
     }
   }
   return found;

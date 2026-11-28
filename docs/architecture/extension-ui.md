@@ -476,7 +476,7 @@ first menu group's label (e.g. `Todos` or `Child todos`) so the three-dot
 trigger is not an orphan. Progress lives in the panel header and the footer
 rail.
 
-**The TODO display controls target the active panel.** With the pinned 0.17.4
+**The TODO display controls target the active panel.** With the pinned 0.17.5
 publisher the four verbs (`Auto todos`, `Show todos`, `Collapse todos`,
 `Hide todos`), bare `/todos` and the terminal `Ctrl+Alt+O` shortcut act on
 whichever panel `/orchestrator view` resolves as active: the child while the
@@ -500,35 +500,33 @@ The Desktop still never parses or re-composes the panel: the seam remains the
 generic contribution contract.
 
 **Compatibility matrix.** The Desktop's staged/pinned publisher bundle is
-`resources/workflow.lock.json`: `@dieulc/workflow` **0.17.4**, pinned as a
-**local tarball** (`source.kind: "tarball"`,
-`source.path: resources/workflow/dieulc-workflow-0.17.4.tgz`, 99 source files,
-`source.integrity: sha512-IwbMvsiVi8YBHno5XUNS9CcucDsgvk4USPKUFN4/zuNk7UQpvB61wPjT0tREvZe0VKKhQbhdadKVYiF77rvYiA==`;
-no release `url` or `tag`). `npm run workflow:lock`/`workflow:stage` verified
-every byte against the lock and staged both `resources/extensions/workflow`
-and `out/extensions/workflow`; `npm run workflow:verify --offline --require-dev`
-re-read both staged copies. The artifact came from the W checkout and is
-**unreleased and unpublished**: pin/stage/verify could not read a published
-asset, and this pin is neither release nor packaged acceptance. Promoting it to
-a release URL/tag is a separately authorized follow-up. Contribution v1 stays
-additive: `HOST_CONTRIBUTION_VERSION` does not move, and the kinds list in the
-host capabilities gains `mode-choice`.
+`resources/workflow.lock.json`: `@dieulc/workflow` **0.17.5**, pinned as a
+**public npm release** (`source.kind: "release"`,
+`source.url: https://registry.npmjs.org/@dieulc/workflow/-/workflow-0.17.5.tgz`,
+`source.tag: @dieulc/workflow@0.17.5`, 99 source files,
+`source.integrity: sha512-B99r3Aqdd9C+pnxTNv8swFhTUUfWQb/bXasPMqNu7Xgw/6KBUJO/UNXNjuYwSMkq72aDvYgKMN0XT4pdqSOyKA==`).
+`npm run workflow:lock`/`workflow:stage` verified every byte against the lock and
+staged both `resources/extensions/workflow` and `out/extensions/workflow`;
+`npm run workflow:verify --offline --require-dev` re-read both staged copies.
+The artifact is the published 0.17.5 npm tarball; packaged build and live
+provider walkthrough remain **NOT RUN**. Contribution v1 stays additive:
+`HOST_CONTRIBUTION_VERSION` does not move, and the kinds list in the host
+capabilities gains `mode-choice`.
 
 | Desktop | Publisher                             | Behavior                                                                                                                                                                                                                                                                                                                                                                                           |
 | ------- | ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| New     | 0.17.4 (local tarball, staged/pinned) | Full UX: one working bar, inline Pause/Resume/Abort, active parent/child TODO targeting with the `Child todos`/`Todos` menu group and four display verbs, `Auto todos`, the mode chevron, the live owner-by-owner `/profile use` switch and its `workflow-model-switch` entry, telemetry only in the footer. This is a local/unpublished artifact (99 source files); no release asset was verified |
+| New     | 0.17.5 (public npm, staged/pinned) | Full UX: one working bar, inline Pause/Resume/Abort, active parent/child TODO targeting with the `Child todos`/`Todos` menu group and four display verbs, `Auto todos`, the mode chevron, the live owner-by-owner `/profile use` switch and its `workflow-model-switch` entry, telemetry only in the footer. This is the published npm artifact (99 source files); packaged/live acceptance remains NOT RUN |
 | New     | 0.15.0 (older, no longer pinned)      | Full UX with grouped three-dot TODO controls, `Auto todos` and the mode chevron, but no child-specific display controls and no live `/profile use` model switch                                                                                                                                                                                                                                    |
 | New     | 0.14.0 (older checkout)               | No groups and no `mode-choice`: legacy flat actions (first few inline, rest in the dots), no chevron, verb-grammar commands (`/orchestrator pause`, `/review pause`)                                                                                                                                                                                                                               |
 | New     | 0.13.0 (legacy, no longer pinned)     | Same fallback with hyphenated commands (`/orchestrator-pause`, `/orchestrator-resume`, `/orchestrator-abort`, `/orchestrator-view`, `/review-pause`, `/review-resume`, `/review-abort`, `/review-status`); its `orchestrator-child` status row is routed to the footer and may duplicate the `workflow-orchestrator` line                                                                          |
 | Old     | 0.17.4                                | The old reader drops the unknown `mode-choice` kind, ignores `group` and renders the remaining actions in its old “first four + More…” layout; the four `/todos` display actions stay dispatchable but carry no `Child todos` grouping, and the removed `orchestrator-child` row does not affect the old footer                                                                                    |
 | Old     | 0.15.0 / 0.14.0 / 0.13.0              | Existing behavior; no regression                                                                                                                                                                                                                                                                                                                                                                   |
 
-> **Pin status:** the staged and pinned publisher is 0.17.4 from a **local
-> tarball** (99 files), not a published release asset. The live model switch
-> and the child display controls are compiled into this staged bundle, but no
-> GitHub release, npm publication, packaged build or live provider walkthrough
-> stands behind it. Manual Terminal/Desktop child acceptance remains **NOT
-> RUN**, and no native Todo panel bar or new Desktop chord was added.
+> **Pin status:** the staged and pinned publisher is the published npm
+> `@dieulc/workflow@0.17.5` artifact (99 files), pinned by integrity. The live
+> model switch and the child display controls are compiled into this bundle.
+> Manual Terminal/Desktop child acceptance remains **NOT RUN**, and no native
+> Todo panel bar or new Desktop chord was added.
 
 ### Pi-parity rules for custom transcript items (2026-10-19 UI rework)
 

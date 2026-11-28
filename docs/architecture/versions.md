@@ -88,6 +88,15 @@ The site build runs in `site/` with `npm ci --prefix site`; the Electron build
 never installs those dependencies. `docs/` remains the single docs source and
 `site/src/content/docs/` is generated and gitignored.
 
+## Bundled Workflow extension
+
+`@dieulc/workflow` is bundled by path, not an app dependency pin.
+`resources/workflow.lock.json` pins **0.17.5** from the public npm tarball
+(`https://registry.npmjs.org/@dieulc/workflow/-/workflow-0.17.5.tgz`), with the
+per-file sha256 manifest and the sha512 integrity checked by
+`npm run workflow:stage` / `workflow:verify`. CI stages the artifact after the
+host build and verifies both staged copies before packaging.
+
 ## Published extension (independent version)
 
 `@dieulc/checkpoints` is a separately versioned npm package (`packages/checkpoints`),
