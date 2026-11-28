@@ -25,6 +25,7 @@ import {
   sanitizeBranchName,
   type GitAction,
   type GitActionResult,
+  type GitCommitContext,
   type GitCommitEntry,
   type GitDiff,
   type GitLogRequest,
@@ -32,7 +33,13 @@ import {
   type GitSnapshot,
   type GitUnavailableReason,
 } from "../shared/git";
-import { applyHunkPatch, DiffParseError, readDiff, type DiffRequest } from "./diff";
+import {
+  applyHunkPatch,
+  DiffParseError,
+  readCommitContext,
+  readDiff,
+  type DiffRequest,
+} from "./diff";
 import { initRepository, readRepo, type ReadRepoOptions } from "./repo";
 import {
   GIT_NETWORK_TIMEOUT_MS,
@@ -93,6 +100,12 @@ export interface GitService {
   action(projectPath: string, action: GitAction): Promise<GitActionResult>;
   /** The branches a checkout menu can offer. */
   branches(projectPath: string): Promise<{ local: string[]; current: string | null }>;
+  /**
+   * The bounded staged-diff input for an AI commit message. A folder that is not
+   * a repository resolves to a zeroed context with `branch: null`; nothing is
+   * staged resolves to a zeroed `stat`/`patch` with the recent subjects intact.
+   */
+  commitContext(projectPath: string): Promise<GitCommitContext>;
   /** Drops every memoised snapshot (after a config change or a resume). */
   clearCache(): void;
 }
@@ -652,6 +665,27 @@ export function createGitService(deps: GitServiceDeps): GitService {
         };
       }
       return runExclusive(repo.repo.root, () => dispatch(repo.repo?.root ?? projectPath, action));
+    },
+
+    async commitContext(projectPath) {
+      const repo = await readRepo(deps.runner, projectPath, {
+        ...(deps.pathKind ? { pathKind: deps.pathKind } : {}),
+      });
+      if (!repo.available || !repo.repo) {
+        return {
+          projectPath,
+          branch: null,
+          stat: "",
+          patch: "",
+          truncated: false,
+          files: 0,
+          insertions: 0,
+          deletions: 0,
+          recentSubjects: [],
+        };
+      }
+      const context = await readCommitContext(deps.runner, repo.repo.root);
+      return { projectPath, branch: repo.repo.branch ?? null, ...context };
     },
 
     async branches(projectPath) {

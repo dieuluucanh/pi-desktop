@@ -90,6 +90,25 @@ describe("validateCustomProvider", () => {
     ]);
   });
 
+  it("accepts only Pi's text and image model input modalities", () => {
+    expect(
+      validateCustomProvider({
+        ...INPUT,
+        models: [{ id: "vision", input: ["text", "image"] }],
+      }).models[0]?.input,
+    ).toEqual(["text", "image"]);
+    expect(
+      validateCustomProvider({ ...INPUT, models: [{ id: "text", input: ["text"] }] }).models[0]
+        ?.input,
+    ).toEqual(["text"]);
+    const invalidInputs: unknown[] = [[], ["image"], ["text", "audio"], ["text", "text"]];
+    for (const input of invalidInputs) {
+      expect(() =>
+        validateCustomProvider({ ...INPUT, models: [{ id: "invalid", input: input as never }] }),
+      ).toThrow(/model input/i);
+    }
+  });
+
   it("trims a model id before storing it", () => {
     const entry = validateCustomProvider({ ...INPUT, models: [{ id: "  hf:deepseek-ai/x  " }] });
     expect(entry.models[0]?.id).toBe("hf:deepseek-ai/x");
@@ -157,7 +176,13 @@ describe("models.json editing", () => {
           authHeader: false,
           modelOverrides: { "gpt-5": { name: "Renamed" } },
           models: [
-            { id: "gpt-5", name: "GPT-5", cost: { input: 1, output: 2 }, reasoning: true },
+            {
+              id: "gpt-5",
+              name: "GPT-5",
+              cost: { input: 1, output: 2 },
+              reasoning: true,
+              input: ["text", "image"],
+            },
             { id: "drop-me", name: "Gone" },
           ],
         },
@@ -227,9 +252,19 @@ describe("models.json editing", () => {
           name: "GPT-5",
           cost: { input: 1, output: 2 },
           reasoning: true,
+          input: ["text", "image"],
           contextWindow: 128_000,
         },
       ]);
+    });
+
+    it("updates input modalities only when the editor explicitly supplies them", () => {
+      const preserved = upsert(handWritten, { models: [{ id: "gpt-5" }] });
+      expect(preserved.models).toMatchObject([{ id: "gpt-5", input: ["text", "image"] }]);
+      const updated = upsert(handWritten, {
+        models: [{ id: "gpt-5", input: ["text"] }],
+      });
+      expect(updated.models).toMatchObject([{ id: "gpt-5", input: ["text"] }]);
     });
 
     it("removes a model id that the input no longer lists, in input order", () => {

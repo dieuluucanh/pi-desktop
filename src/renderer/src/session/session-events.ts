@@ -1,5 +1,8 @@
+import type { AttachmentTranscriptCard } from "../../../shared/attachments";
+import { isAttachmentId, validateAttachmentTranscriptCard } from "../../../shared/attachments";
 import type { SessionEventEntry } from "../../../shared/session-ipc";
 import { hashPromptText } from "../../../shared/prompt-origin";
+import { readQueueOriginList, type QueueEntryOrigin } from "../../../shared/queue-origin";
 import { parseReviewDecision, type ReviewDecision } from "../../../shared/web-tabs";
 
 /**
@@ -77,6 +80,11 @@ export interface TranscriptMessage {
    * means the body is the expanded instruction, not text the user typed.
    */
   promptOrigin?: string;
+  /** Host-correlated attachment send identity; renderer events never invent it. */
+  attachmentTurnId?: string;
+  attachmentAttemptId?: string;
+  /** Safe projection of a persisted SDK custom association entry. */
+  attachmentCard?: AttachmentTranscriptCard;
 }
 
 export interface TranscriptToolRun {
@@ -111,9 +119,22 @@ export type TranscriptItem =
   | { kind: "tool"; id: string; tool: TranscriptToolRun }
   | { kind: "notice"; id: string; notice: TranscriptNotice };
 
+/**
+ * One pending message plus who queued it (2026-11-26 queue-bar plan, step 4).
+ *
+ * `origin` comes from the host's `queue_update.queueOrigins` annotation: the SDK
+ * queue stores text only, so an extension's own turn and the user's are
+ * identical on the wire. A missing annotation reads as `"user"` — today's
+ * behaviour — so a legacy host never hides or drops a user's row.
+ */
+export interface QueuedMessage {
+  text: string;
+  origin: QueueEntryOrigin;
+}
+
 export interface TranscriptQueue {
-  steering: string[];
-  followUp: string[];
+  steering: QueuedMessage[];
+  followUp: QueuedMessage[];
 }
 
 export type TranscriptRunStatus =
@@ -319,7 +340,7 @@ export function messageFromSdk(message: unknown, id: string = nextId("msg")): Tr
       : role === "compactionSummary" || role === "branchSummary"
         ? asString(record.summary)
         : record.content;
-  return {
+  const transcriptMessage: TranscriptMessage = {
     id,
     role: mappedRole,
     blocks: blocksFromContent(text),
@@ -336,6 +357,9 @@ export function messageFromSdk(message: unknown, id: string = nextId("msg")): Tr
       ? { promptOrigin: record.promptOrigin }
       : {}),
   };
+  const attachmentCard = validateAttachmentTranscriptCard(record.desktopAttachmentCard);
+  if (attachmentCard) transcriptMessage.attachmentCard = attachmentCard;
+  return transcriptMessage;
 }
 
 function withItems(state: TranscriptState, items: TranscriptItem[]): TranscriptState {
@@ -733,15 +757,16 @@ export function reduceSessionEvents(
         const raw = asRecord(payload.message);
         const id = asString(raw.id) || nextId("msg");
         const promptOrigin = asString(payload.promptOrigin);
-        next = appendItem(next, {
-          kind: "message",
-          id,
-          message: {
-            ...messageFromSdk(payload.message, id),
-            streaming: raw.role === "assistant",
-            ...(promptOrigin.length > 0 ? { promptOrigin } : {}),
-          },
-        });
+        const attachmentTurnId = asString(payload.attachmentTurnId);
+        const attachmentAttemptId = asString(payload.attachmentAttemptId);
+        const startedMessage = messageFromSdk(payload.message, id);
+        startedMessage.streaming = raw.role === "assistant";
+        if (promptOrigin.length > 0) startedMessage.promptOrigin = promptOrigin;
+        if (isAttachmentId(attachmentTurnId)) startedMessage.attachmentTurnId = attachmentTurnId;
+        if (isAttachmentId(attachmentAttemptId)) {
+          startedMessage.attachmentAttemptId = attachmentAttemptId;
+        }
+        next = appendItem(next, { kind: "message", id, message: startedMessage });
         // A `!` command may sit beside a streaming assistant message: it is
         // opened and closed by its own id, so the next `message_end` of the
         // assistant still resolves to the assistant (plan step 7).
@@ -852,15 +877,20 @@ export function reduceSessionEvents(
         next = applyBashDelta(next, payload);
         break;
 
-      case "queue_update":
+      case "queue_update": {
+        // The SDK sends text only; `queueOrigins` is the host's parallel
+        // annotation (step 3). Pair it positionally, dropping non-string texts
+        // as before so the row count matches the annotation.
+        const origins = asRecord(payload.queueOrigins);
         next = {
           ...next,
           queue: {
-            steering: asStringArray(payload.steering),
-            followUp: asStringArray(payload.followUp),
+            steering: queueRows(asStringArray(payload.steering), origins.steering),
+            followUp: queueRows(asStringArray(payload.followUp), origins.followUp),
           },
         };
         break;
+      }
 
       case "compaction_start":
         next = { ...next, runStatus: { kind: "compacting" } };
@@ -1023,6 +1053,16 @@ function asStringArray(value: unknown): string[] {
     : [];
 }
 
+/**
+ * Pairs queued texts with their host annotation, positionally. Every text gets a
+ * `QueuedMessage`; a short, absent or malformed annotation leaves the tail (or
+ * the whole list) as `"user"`, the fail-open default.
+ */
+function queueRows(texts: readonly string[], origins: unknown): QueuedMessage[] {
+  const list = readQueueOriginList(origins, texts.length);
+  return texts.map((text, index) => ({ text, origin: list[index] ?? "user" }));
+}
+
 /** Text of a tool result/partial payload (`{content:[{type:"text",text}]}`). */
 export function textOfPartial(result: unknown): string {
   // A tool result is usually `{content:[…]}`, but a plain string is valid too
@@ -1122,6 +1162,38 @@ export function hydrateMessages(
     }
   }
   return applyPromptOrigins(next, promptOrigins);
+}
+
+/** Reconciles an accepted SDK association onto its exact live message turn. */
+export function applyAttachmentTranscriptCard(
+  state: TranscriptState,
+  card: AttachmentTranscriptCard,
+): TranscriptState {
+  const entryIndex = state.messageIndex[card.userEntryId];
+  const turnIndex = state.items.findIndex(
+    (item) => item.kind === "message" && item.message.attachmentTurnId === card.turnId,
+  );
+  const index = entryIndex ?? (turnIndex < 0 ? undefined : turnIndex);
+  if (index === undefined) return state;
+  const item = state.items[index];
+  if (item?.kind !== "message" || item.message.role !== "user") return state;
+  const collision = state.messageIndex[card.userEntryId];
+  if (collision !== undefined && collision !== index) return state;
+  const items = [...state.items];
+  items[index] = {
+    kind: "message",
+    id: card.userEntryId,
+    message: { ...item.message, id: card.userEntryId, attachmentCard: card },
+  };
+  const messageIndex = { ...state.messageIndex };
+  if (item.id !== card.userEntryId) delete messageIndex[item.id];
+  messageIndex[card.userEntryId] = index;
+  return {
+    ...state,
+    items,
+    messageIndex,
+    entryIds: { ...state.entryIds, [card.userEntryId]: true },
+  };
 }
 
 /** Text blocks of a built transcript message, joined as the display does. */

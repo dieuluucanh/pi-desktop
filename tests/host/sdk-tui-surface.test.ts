@@ -1,6 +1,6 @@
 import { Editor, SelectList, getKeybindings } from "@earendil-works/pi-tui";
 import { getSelectListTheme, type AgentSession } from "@earendil-works/pi-coding-agent";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { createExtensionUiPort } from "../../src/host/extension-ui";
 import { createSdkExtensionUiContext, createSdkThemeAccess } from "../../src/host/sdk/extension-ui";
@@ -76,7 +76,7 @@ describe("createSdkTuiKeybindings", () => {
 });
 
 describe("createSdkFooterData", () => {
-  it("reports live extension statuses and no git branch", () => {
+  it("reports live extension statuses and no git branch by default", () => {
     const port = createExtensionUiPort({ emit: () => undefined });
     port.setStatus("build", "ok");
     const data = createSdkFooterData(port);
@@ -84,6 +84,35 @@ describe("createSdkFooterData", () => {
     expect(data.getExtensionStatuses().get("build")).toBe("ok");
     expect(data.getAvailableProviderCount()).toBe(0);
     expect(typeof data.onBranchChange(() => undefined)).toBe("function");
+  });
+
+  it("carries the live branch and provider count a custom footer reads (row 28)", () => {
+    const port = createExtensionUiPort({ emit: () => undefined });
+    let branch = "feat/parity";
+    let providers = 3;
+    const listeners = new Set<() => void>();
+    const data = createSdkFooterData(port, {
+      gitBranch: () => branch,
+      availableProviderCount: () => providers,
+      onBranchChange: (listener) => {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+    });
+    expect(data.getGitBranch()).toBe("feat/parity");
+    expect(data.getAvailableProviderCount()).toBe(3);
+
+    const seen = vi.fn();
+    const unsubscribe = data.onBranchChange(seen);
+    branch = "main";
+    providers = 1;
+    for (const listener of listeners) listener();
+    expect(seen).toHaveBeenCalled();
+    expect(data.getGitBranch()).toBe("main");
+    expect(data.getAvailableProviderCount()).toBe(1);
+
+    unsubscribe();
+    expect(listeners.size).toBe(0);
   });
 });
 

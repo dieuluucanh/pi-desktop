@@ -55,6 +55,12 @@ describe("/export", () => {
     (window.pi as unknown as { revealPath: unknown }).revealPath = reveal;
 
     await useAppStore.getState().runCommandInput(TAB, "/export");
+    // Native export asks for the truthful-content confirmation first (step 15).
+    expect(useAppStore.getState().pendingExport).toEqual({ tabId: TAB, format: "html" });
+    expect(request).not.toHaveBeenCalledWith(
+      expect.objectContaining({ method: "session.exportHtml" }),
+    );
+    await useAppStore.getState().confirmExport();
 
     expect(request).toHaveBeenCalledWith({ tabId: TAB, method: "session.exportHtml" });
     expect(useAppStore.getState().hint).toMatch(/Exported to \/tmp\/s1\.html/);
@@ -68,6 +74,8 @@ describe("/export", () => {
     (window.pi as unknown as { revealPath: unknown }).revealPath = reveal;
 
     await useAppStore.getState().runCommandInput(TAB, "/export jsonl");
+    expect(useAppStore.getState().pendingExport).toEqual({ tabId: TAB, format: "jsonl" });
+    await useAppStore.getState().confirmExport();
 
     expect(request).toHaveBeenCalledWith({ tabId: TAB, method: "session.exportJsonl" });
     expect(reveal).toHaveBeenCalledWith("/tmp/s1.jsonl");

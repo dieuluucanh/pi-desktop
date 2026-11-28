@@ -67,12 +67,14 @@ describe("electron-builder config (plan step 26)", () => {
     expect(builderYaml).not.toMatch(/target:\s*(?:AppImage|deb)\s*\n\s+arch:/);
   });
 
-  it("ships the bundled runtime and the Office manifest outside the asar", () => {
-    // Both are read by absolute path at runtime, so they cannot live in the asar.
+  it("ships the bundled runtime, the Office manifest and the Workflow bundle outside the asar", () => {
+    // All three are read by absolute path at runtime, so they cannot live in the asar.
     expect(builderYaml).toMatch(/from:\s*resources\/runtime/);
     expect(builderYaml).toMatch(/from:\s*resources\/office/);
+    expect(builderYaml).toMatch(/from:\s*resources\/extensions/);
     expect(builderYaml).toMatch(/to:\s*runtime/);
     expect(builderYaml).toMatch(/to:\s*office/);
+    expect(builderYaml).toMatch(/to:\s*extensions/);
   });
 
   it("names a brand icon for every platform it targets, and ships them to the app", () => {

@@ -1,4 +1,20 @@
 import type { OfficeSetupStepId, OfficeSetupView } from "./office-setup";
+import type {
+  AttachmentDeliveryRequest,
+  AttachmentDraftGrant,
+  AttachmentImportGrant,
+  AttachmentImportRequest,
+  AttachmentPickResult,
+  AttachmentPromptResult,
+  AttachmentDescriptor,
+  AttachmentPreview,
+  AttachmentReadiness,
+  AttachmentReadinessRequest,
+  AttachmentSnapshot,
+  AttachmentStatusRequest,
+  AttachmentSubmissionStatus,
+} from "./attachments";
+import type { AttachmentRetentionClearReport, AttachmentStorageReport } from "./attachment-storage";
 import type { OfficeBridgeControlResult, OfficeStopResult } from "./office-bridge";
 import type { OfficeDocumentsView } from "./office-documents";
 import type { DiagnosticsExport, DiagnosticsSnapshot } from "./diagnostics";
@@ -8,6 +24,7 @@ import type { ProfileMode } from "./profile";
 import type {
   GitAction,
   GitActionResult,
+  GitCommitContext,
   GitCommitEntry,
   GitDiff,
   GitDiffRequest,
@@ -89,6 +106,8 @@ export const IPC = {
   shareSession: "share:session",
   /** Renderer → main: build a local bug-report zip (`/bug`). */
   shareBugReport: "share:bug-report",
+  /** Renderer → main: write the attachment-private transcript to a chosen path. */
+  shareExportSanitized: "share:export-sanitized",
   /** Renderer → main: open the draft in the configured OS editor and wait. */
   editorOpen: "editor:open",
   /** Renderer → main: reveal a path in the OS file manager. */
@@ -106,9 +125,29 @@ export const IPC = {
   /** Main → renderer: an application-menu command (New Session, Settings, …). */
   appMenuCommand: "app:menu-command",
 
+  /** Attachments: scoped, bounded imports and previews; never paths. */
+  attachmentsOpenDraft: "attachments:open-draft",
+  attachmentsCloseDraft: "attachments:close-draft",
+  attachmentsPick: "attachments:pick",
+  attachmentsBegin: "attachments:begin",
+  attachmentsAppend: "attachments:append",
+  attachmentsCommit: "attachments:commit",
+  attachmentsCancel: "attachments:cancel",
+  attachmentsList: "attachments:list",
+  attachmentsPreview: "attachments:preview",
+  attachmentsRemove: "attachments:remove",
+  attachmentsSubmit: "attachments:submit",
+  attachmentsStatus: "attachments:status",
+  attachmentsReadiness: "attachments:readiness",
+  attachmentsStorage: "attachments:storage",
+  attachmentsClearStorage: "attachments:clear-storage",
+  attachmentsExportBundle: "attachments:export-bundle",
+  attachmentsImportBundle: "attachments:import-bundle",
+
   /** Sessions (plan step 3): tabs are the renderer's handle on a Pi host. */
   sessionTabs: "session:tabs",
   sessionCreate: "session:create",
+  /** Idempotently closes a well-formed real tab id, including an already-retired id. */
   sessionClose: "session:close",
   /** Closes every non-pinned tab of one kind. */
   sessionCloseAll: "session:close-all",
@@ -146,6 +185,7 @@ export const IPC = {
   sessionStop: "session:stop",
   /** Wakes a tab's host and session without changing the active tab. */
   sessionEnsure: "session:ensure",
+  /** Passive request races for proven retired tabs may resolve with tab-closed cancellation data. */
   sessionRequest: "session:request",
   /** Deletes a session to the OS trash (plan step 11; validated in main). */
   sessionDelete: "session:delete",
@@ -273,6 +313,8 @@ export const IPC = {
   gitHeadMessage: "git:head-message",
   /** Local branch names, for the checkout menu. */
   gitBranches: "git:branches",
+  /** The bounded staged-diff input for an AI commit message. */
+  gitCommitContext: "git:commit-context",
   /** Main → renderer: a folder's snapshot changed. */
   gitPushed: "git:state",
 
@@ -329,14 +371,6 @@ export const MENU_COMMANDS = [
   "open-web-url",
   "close-session",
   "view-sessions",
-  // Todo panel display control (2026-11-18 todo-panel-all-states plan).
-  // Explicit verbs plus a toggle; the toggle owns CmdOrCtrl+Alt+L because
-  // Ctrl+Alt+O is already Sessions. The renderer dispatches /todos <verb>.
-  "todos-auto",
-  "todos-expand",
-  "todos-collapse",
-  "todos-hide",
-  "todos-toggle",
   "next-tab",
   "previous-tab",
   "command-palette",
@@ -454,10 +488,53 @@ export interface WindowState {
   fullScreen: boolean;
 }
 
+/** Main-authorized attachment ingestion; a draft grant is scoped to one tab. */
+export interface AttachmentsBridge {
+  openDraft(tabId: string, draftId?: string): Promise<AttachmentDraftGrant>;
+  closeDraft(draft: AttachmentDraftGrant): Promise<void>;
+  pick(draft: AttachmentDraftGrant): Promise<readonly AttachmentPickResult[] | null>;
+  begin(input: AttachmentImportRequest): Promise<AttachmentImportGrant>;
+  append(
+    draft: AttachmentDraftGrant,
+    token: string,
+    offset: number,
+    bytes: Uint8Array,
+  ): Promise<number>;
+  commit(draft: AttachmentDraftGrant, token: string): Promise<AttachmentSnapshot>;
+  cancel(draft: AttachmentDraftGrant, token: string): Promise<void>;
+  list(draft: AttachmentDraftGrant): Promise<readonly AttachmentDescriptor[]>;
+  preview(draft: AttachmentDraftGrant, id: string, maxBytes: number): Promise<AttachmentPreview>;
+  remove(draft: AttachmentDraftGrant, id: string): Promise<void>;
+  /** Managed attachment send uses a dedicated sender-checked route, never session.request. */
+  submit(input: AttachmentDeliveryRequest): Promise<AttachmentPromptResult>;
+  /** Metadata-only recovery status for the draft's latest managed attempt. */
+  status(input: AttachmentStatusRequest): Promise<AttachmentSubmissionStatus>;
+  /** Non-submitting per-file + aggregate readiness against the live host. */
+  readiness(input: AttachmentReadinessRequest): Promise<AttachmentReadiness>;
+  /** Bounded storage/quota report; null means the manifest is unreadable. */
+  storage(): Promise<AttachmentStorageReport | null>;
+  /** Explicit, warned reclamation of unreferenced/unprotected copies. */
+  clearStorage(): Promise<AttachmentRetentionClearReport>;
+  /** Optional local portable bundle (plan step 15); never uploaded. */
+  exportBundle(input: {
+    tabId: string;
+    includeObjects: boolean;
+  }): Promise<{ ok: boolean; path?: string; assets?: number; objects?: number; error?: string }>;
+  importBundle(input: { tabId: string }): Promise<{
+    ok: boolean;
+    path?: string;
+    originals?: number;
+    representations?: number;
+    error?: string;
+  }>;
+}
+
 /** Session tabs and host events (plan step 3). */
 export interface SessionsBridge {
   list(): Promise<SessionTabsEnvelope>;
+  /** In-flight create may resolve with a tab-closed cancellation envelope. */
   create(input: CreateTabInput): Promise<SessionTabsEnvelope>;
+  /** Closing is idempotent; stale/repeated IDs resolve with the current tab envelope. */
   close(tabId: string): Promise<SessionTabsEnvelope>;
   /** Closes every non-pinned tab of `kind`. */
   closeAll(kind: TabKind): Promise<SessionTabsEnvelope>;
@@ -473,11 +550,13 @@ export interface SessionsBridge {
   reorder(tabId: string, toIndex: number): Promise<SessionTabsEnvelope>;
   /** Makes this tab the single Office host (plan step 20), restarting its host. */
   promoteOfficeHost(tabId: string): Promise<SessionTabsEnvelope>;
+  /** In-flight activation may resolve with a tab-closed cancellation envelope. */
   activate(tabId: string): Promise<SessionTabsEnvelope>;
   /**
    * Wakes a tab's host and session without changing the selection. This is the
    * call a background pane/reconcile makes; `activate` stays the gesture that
-   * moves the app (2026-11-06 tab-switch plan).
+   * moves the app (2026-11-06 tab-switch plan). It can resolve with a
+   * cancellation-marked envelope if explicitly closed in flight.
    */
   ensure(tabId: string): Promise<SessionTabsEnvelope>;
   /**
@@ -647,6 +726,14 @@ export interface ShareBridge {
     versions: Record<string, string | null | undefined>;
     diagnostics?: unknown;
   }): Promise<{ ok: boolean; path?: string; bytes?: number; error?: string }>;
+  /** A separately labeled, non-reimportable attachment-private transcript. */
+  exportSanitized(sessionFile: string): Promise<{
+    ok: boolean;
+    path?: string;
+    bytes?: number;
+    error?: string;
+    detail?: string;
+  }>;
   /**
    * Opens the draft in the configured OS editor and resolves when it exits.
    * `ok: false` with `error: "no_editor"` means "use the in-app editor".
@@ -732,6 +819,11 @@ export interface GitBridge {
   headMessage(projectPath: string): Promise<string | null>;
   /** Local branch names, sorted, for the checkout menu. */
   branches(projectPath: string): Promise<string[]>;
+  /**
+   * The bounded staged-diff input for an AI commit message: the `--stat`
+   * summary, the recent subjects and a size-capped patch. Never stages anything.
+   */
+  commitContext(projectPath: string): Promise<GitCommitContext>;
   /** Main → renderer: a watched folder's snapshot changed. */
   onSnapshot(listener: (snapshot: GitSnapshot) => void): () => void;
 }
@@ -821,6 +913,8 @@ export interface PiDesktopBridge {
   onMenuCommand(listener: (command: MenuCommand) => void): () => void;
   prefs: PrefsBridge;
   sessions: SessionsBridge;
+  /** Absent when the renderer is connected to an older preload. */
+  attachments?: AttachmentsBridge;
   terminal: TerminalBridge;
   tui: TuiBridge;
   share: ShareBridge;

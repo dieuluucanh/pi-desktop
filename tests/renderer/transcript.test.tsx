@@ -10,9 +10,13 @@ import {
   type TranscriptItem,
 } from "../../src/renderer/src/session/session-events";
 import { installBridge } from "./fixtures";
+import { withVirtualizedGeometry } from "./fixtures/virtualizer-geometry";
 import { useAppStore } from "../../src/renderer/src/state/app-store";
 import { DEFAULT_PREFS } from "../../src/shared/prefs";
-import { TRANSCRIPT_10K_ITEMS } from "../../src/shared/performance";
+import {
+  TRANSCRIPT_10K_ITEMS,
+  TRANSCRIPT_VIRTUALIZE_THRESHOLD,
+} from "../../src/shared/performance";
 
 /**
  * Transcript rendering (plan step 5). The fixture below drives the *real*
@@ -422,6 +426,41 @@ describe("transcript rendering", () => {
     expect(content.className).not.toMatch(/\bmax-w-/);
     // A row far outside the window never mounts, however large the session is.
     expect(container.textContent).not.toContain("notice 9999");
+  });
+
+  it("switches branches exactly at the shared virtualization threshold", () => {
+    // The threshold used to be a local `50` in `Transcript.tsx` beside the shared
+    // `TRANSCRIPT_VIRTUALIZE_THRESHOLD`; one constant now decides both branches
+    // (2026-11-25 plan step 3).
+    const items = (count: number): TranscriptItem[] =>
+      Array.from({ length: count }, (_, index) => ({
+        kind: "notice",
+        id: `threshold-${index}`,
+        notice: {
+          id: `threshold-n-${index}`,
+          severity: "info",
+          event: "notice",
+          text: `notice ${index}`,
+        },
+      }));
+
+    const plain = render(<Transcript items={items(TRANSCRIPT_VIRTUALIZE_THRESHOLD - 1)} />);
+    expect(plain.container.querySelectorAll("[data-row-index]")).toHaveLength(
+      TRANSCRIPT_VIRTUALIZE_THRESHOLD - 1,
+    );
+    expect(plain.container.querySelector("[data-index]")).toBeNull();
+    // Browser scroll anchoring never competes with the follow pin (step 3).
+    expect(screen.getByTestId("transcript").style.overflowAnchor).toBe("none");
+    plain.unmount();
+
+    withVirtualizedGeometry(() => {
+      const virtualized = render(<Transcript items={items(TRANSCRIPT_VIRTUALIZE_THRESHOLD + 1)} />);
+      expect(virtualized.container.querySelector("[data-row-index]")).toBeNull();
+      const rows = virtualized.container.querySelectorAll("[data-index]");
+      expect(rows.length).toBeGreaterThan(0);
+      expect(rows[0]?.className).toContain("absolute");
+      expect(screen.getByTestId("transcript").style.overflowAnchor).toBe("none");
+    });
   });
 });
 

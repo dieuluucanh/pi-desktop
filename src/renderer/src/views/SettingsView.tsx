@@ -27,6 +27,8 @@ import {
   SourceControlSettingsCard,
 } from "../settings/SourceControlSettings";
 import { NotificationsSettingsCard } from "../settings/NotificationsSettings";
+import { EditorSettingsCard } from "../settings/EditorSettings";
+import { AttachmentStorageSettingsCard } from "../settings/AttachmentStorageSettings";
 import { TerminalSettingsCard } from "../settings/TerminalSettings";
 import { setSidebarWidth } from "../state/sidebar-width";
 import { ViewShell } from "./ViewShell";
@@ -323,24 +325,9 @@ export function SettingsView() {
             <span className="text-xs text-ink-faint">{prefs.sidebarWidth}px</span>
           </div>
         </Row>
-        <Row
-          label="Install telemetry"
-          hint="Pi's anonymous install/update ping and provider attribution header. Off by default; this app never rewrites Pi's shared settings.json."
-        >
-          <div className="flex items-center gap-2" data-testid="privacy-telemetry">
-            <Switch
-              checked={prefs.telemetryEnabled}
-              onCheckedChange={(telemetryEnabled) =>
-                setPrefs({ telemetryEnabled, privacyAcknowledged: true })
-              }
-              aria-label="Share anonymous install telemetry"
-            />
-            <span className="text-xs text-ink-faint">
-              {prefs.telemetryEnabled ? "on (new sessions)" : "off"}
-            </span>
-          </div>
-        </Row>
       </section>
+
+      <EditorSettingsCard />
 
       <div ref={terminalCardRef}>
         <TerminalSettingsCard />
@@ -357,6 +344,7 @@ export function SettingsView() {
       <div ref={notificationsCardRef}>
         <NotificationsSettingsCard />
       </div>
+      <AttachmentStorageSettingsCard />
 
       <div className="flex items-center justify-between gap-3">
         <h2 className="text-sm font-semibold">Pi settings</h2>

@@ -227,7 +227,48 @@ describe("queue and notices", () => {
     const state = reduceSessionEvents(createTranscriptState(), [
       { event: "queue_update", payload: { steering: ["a"], followUp: ["b", 7] } },
     ]);
-    expect(state.queue).toEqual({ steering: ["a"], followUp: ["b"] });
+    expect(state.queue).toEqual({
+      steering: [{ text: "a", origin: "user" }],
+      followUp: [{ text: "b", origin: "user" }],
+    });
+  });
+
+  it("maps the host's queueOrigins annotation positionally", () => {
+    const state = reduceSessionEvents(createTranscriptState(), [
+      fixtures.queue(["a", "b"], ["c"], {
+        steering: ["user", "extension"],
+        followUp: ["extension"],
+      }),
+    ]);
+    expect(state.queue).toEqual({
+      steering: [
+        { text: "a", origin: "user" },
+        { text: "b", origin: "extension" },
+      ],
+      followUp: [{ text: "c", origin: "extension" }],
+    });
+  });
+
+  it("defaults a short or absent annotation to the user", () => {
+    const short = reduceSessionEvents(createTranscriptState(), [
+      fixtures.queue(["a", "b"], ["c", "d"], { steering: ["extension"], followUp: [] }),
+    ]);
+    expect(short.queue).toEqual({
+      steering: [
+        { text: "a", origin: "extension" },
+        { text: "b", origin: "user" },
+      ],
+      followUp: [
+        { text: "c", origin: "user" },
+        { text: "d", origin: "user" },
+      ],
+    });
+
+    const absent = reduceSessionEvents(createTranscriptState(), [fixtures.queue(["a"], ["b"])]);
+    expect(absent.queue).toEqual({
+      steering: [{ text: "a", origin: "user" }],
+      followUp: [{ text: "b", origin: "user" }],
+    });
   });
 
   it("turns lifecycle events into notices, including a crash and an extension error", () => {

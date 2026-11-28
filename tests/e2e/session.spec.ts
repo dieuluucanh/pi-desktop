@@ -1,4 +1,6 @@
 import { spawnSync } from "node:child_process";
+import { createServer, type Server } from "node:http";
+import type { AddressInfo } from "node:net";
 import { expect, test } from "@playwright/test";
 import { launchFakeApp, type FakeApp } from "./fixtures/fake-app";
 import { removeTempDirs } from "./fixtures/app";
@@ -300,4 +302,226 @@ test("prints multi-line info command output in the transcript with default prefs
   await expect(notice).toBeVisible({ timeout: 30_000 });
   await expect(notice).toContainText("outside: ask");
   expect(current.provider.requests).toHaveLength(requestsBefore);
+});
+
+test("closes a starting session once without startup errors or resurrection", async () => {
+  test.setTimeout(180_000);
+  const held: Array<{ release(): void }> = [];
+  const queued: Array<() => void> = [];
+  const waiting: Array<(release: () => void) => void> = [];
+  let gateServer: Server | undefined;
+  const rendererFailures: string[] = [];
+  const base = await new Promise<string>((resolve, reject) => {
+    gateServer = createServer((_request, response) => {
+      let released = false;
+      const release = (): void => {
+        if (released) return;
+        released = true;
+        if (!response.destroyed) response.writeHead(204).end();
+      };
+      held.push({ release });
+      const waiter = waiting.shift();
+      if (waiter) waiter(release);
+      else queued.push(release);
+    });
+    gateServer.once("error", reject);
+    gateServer.listen(0, "127.0.0.1", () => {
+      const address = gateServer?.address() as AddressInfo;
+      resolve(`http://127.0.0.1:${address.port}/hold`);
+    });
+  });
+  const nextGate = (): Promise<() => void> => {
+    const ready = queued.shift();
+    if (ready) return Promise.resolve(ready);
+    return new Promise((resolve) => waiting.push(resolve));
+  };
+  const releaseAll = (): void => {
+    for (const gate of held) gate.release();
+    for (const release of waiting.splice(0)) release(() => undefined);
+  };
+  const extension = `export default function (pi) {
+  pi.on("session_start", async () => {
+    await fetch(${JSON.stringify(base)});
+  });
+}`;
+
+  try {
+    const current = (app = await launchFakeApp({
+      launch: { extensions: { "startup-gate.js": extension } },
+    }));
+    current.window.on("pageerror", (error) => rendererFailures.push(`pageerror: ${error.message}`));
+    current.window.on("console", (message) => {
+      if (message.type() === "error") rendererFailures.push(`console: ${message.text()}`);
+    });
+    await expect(
+      current.window.getByRole("button", { name: /new session/i }).first(),
+    ).toBeVisible();
+    await expect(current.window.getByRole("heading", { name: "Pi Desktop" })).toBeVisible();
+
+    // Keep the bridge calls explicit in page context; no production test hooks are exposed.
+    const list = async (): Promise<{
+      tabs: Array<{ id: string; kind: string; status: string }>;
+      activeTabId: string | null;
+    }> =>
+      current.window.evaluate(async () =>
+        (
+          window as unknown as { pi: { sessions: { list(): Promise<unknown> } } }
+        ).pi.sessions.list(),
+      ) as Promise<{
+        tabs: Array<{ id: string; kind: string; status: string }>;
+        activeTabId: string | null;
+      }>;
+    const diagnostics = async (): Promise<{
+      hosts: Array<{ tabId: string; pid: number | null; logLines: string[] }>;
+    }> =>
+      current.window.evaluate(async () =>
+        (
+          window as unknown as { pi: { diagnostics: { get(): Promise<unknown> } } }
+        ).pi.diagnostics.get(),
+      ) as Promise<{ hosts: Array<{ tabId: string; pid: number | null; logLines: string[] }> }>;
+    const ensure = async (tabId: string): Promise<void> => {
+      await current.window.evaluate(async (id) => {
+        const pi = (
+          window as unknown as { pi: { sessions: { ensure(id: string): Promise<unknown> } } }
+        ).pi;
+        await pi.sessions.ensure(id);
+      }, tabId);
+    };
+    const openStarting = async (): Promise<{ id: string; release: () => void }> => {
+      const gate = nextGate();
+      await current.window
+        .getByRole("button", { name: /new session/i })
+        .first()
+        .click();
+      const release = await gate;
+      const startingDot = current.window.locator('[data-status="starting"]').last();
+      await expect(startingDot).toBeVisible({ timeout: 30_000 });
+      const tab = startingDot.locator("xpath=ancestor::*[@data-tab-id]");
+      const id = await tab.getAttribute("data-tab-id");
+      expect(id, "starting tab must expose its real main-process tab id").toBeTruthy();
+      return { id: id!, release };
+    };
+    const closeByX = async (id: string): Promise<void> => {
+      await current.window
+        .locator(`[data-testid="tab-${id}"] button[aria-label^="Close "]`)
+        .click();
+    };
+    const getMainOutput = (): string => current.stderr.join("");
+    const closedHostPid = async (id: string): Promise<number | null> =>
+      (await diagnostics()).hosts.find((host) => host.tabId === id)?.pid ?? null;
+    const closedIds: string[] = [];
+    const requestDiagnostics: string[] = [];
+
+    // A real ready tab is the survivor; closing another starting tab must select it.
+    const previous = await openStarting();
+    previous.release();
+    await expect(current.window.getByLabel("Prompt")).toBeVisible({ timeout: 30_000 });
+    await ensure(previous.id); // settles the actual create/activate lifecycle, not merely the green dot
+    await expect(
+      current.window.locator(`[data-testid="tab-${previous.id}"] [data-status="idle"]`),
+    ).toBeVisible();
+
+    for (let iteration = 0; iteration < 2; iteration += 1) {
+      const starting = await openStarting();
+      // Capture identities and diagnostics before the single close gesture.
+      const pid = await closedHostPid(starting.id);
+      const hostBeforeClose = (await diagnostics()).hosts.find(
+        (host) => host.tabId === starting.id,
+      );
+      requestDiagnostics.push(...(hostBeforeClose?.logLines ?? []));
+      closedIds.push(starting.id);
+      await closeByX(starting.id);
+      await expect(current.window.locator(`[data-testid="tab-${starting.id}"]`)).toHaveCount(0);
+      await expect(
+        current.window.locator(`[data-testid="tab-${previous.id}"] [role="tab"]`),
+      ).toHaveAttribute("aria-selected", "true", { timeout: 30_000 });
+      starting.release();
+      const now = await list();
+      expect(now.tabs.some((tab) => tab.id === starting.id)).toBe(false);
+      expect(now.activeTabId).toBe(previous.id);
+      expect(pid, `host pid unavailable for ${starting.id}`).not.toBeNull();
+      expect((await diagnostics()).hosts.some((host) => host.tabId === starting.id)).toBe(false);
+      if (pid !== null) {
+        let alive = true;
+        try {
+          process.kill(pid, 0);
+        } catch {
+          alive = false;
+        }
+        expect(alive, `closed host process ${pid} for ${starting.id} remains alive`).toBe(false);
+      }
+    }
+
+    // The ready-tab close control works too. With no remaining tab, an early close
+    // returns to Welcome; this is repeated in the same launch, not only at restore.
+    await closeByX(previous.id);
+    await expect(
+      current.window.getByRole("button", { name: /new session/i }).first(),
+    ).toBeVisible();
+    const finalStarting = await openStarting();
+    const finalPid = await closedHostPid(finalStarting.id);
+    const finalHostBeforeClose = (await diagnostics()).hosts.find(
+      (host) => host.tabId === finalStarting.id,
+    );
+    requestDiagnostics.push(...(finalHostBeforeClose?.logLines ?? []));
+    closedIds.push(finalStarting.id);
+    await closeByX(finalStarting.id);
+    await expect(current.window.locator(`[data-testid="tab-${finalStarting.id}"]`)).toHaveCount(0);
+    await expect(current.window.getByRole("heading", { name: "Pi Desktop" })).toBeVisible({
+      timeout: 30_000,
+    });
+    finalStarting.release();
+
+    const finalTabs = await list();
+    expect(finalTabs.tabs.some((tab) => tab.id === finalStarting.id)).toBe(false);
+    expect(finalTabs.activeTabId).toBeNull();
+    expect(finalPid).not.toBeNull();
+    expect((await diagnostics()).hosts.some((host) => host.tabId === finalStarting.id)).toBe(false);
+    if (finalPid !== null) {
+      let alive = true;
+      try {
+        process.kill(finalPid, 0);
+      } catch {
+        alive = false;
+      }
+      expect(alive, `closed host process ${finalPid} for ${finalStarting.id} remains alive`).toBe(
+        false,
+      );
+    }
+    const expectedCloseErrors = /host_stopped|tab-closed|unknown tab/i;
+    const mainOutput = getMainOutput();
+    expect(
+      mainOutput,
+      `tab=${finalStarting.id}; renderer=${rendererFailures.join("\n")}`,
+    ).not.toMatch(expectedCloseErrors);
+    expect(rendererFailures.join("\n"), `main stderr:\n${mainOutput}`).not.toMatch(
+      expectedCloseErrors,
+    );
+
+    // Diagnostics identifies any session request method in host log lines without
+    // assuming the unlabelled request in the original report was messages.get.
+    test.info().annotations.push({
+      type: "close-diagnostics",
+      description: JSON.stringify({
+        closedTabIds: closedIds,
+        identifiableRequestMethodsOrHostLogs: requestDiagnostics,
+        rendererFailures,
+        stderr: mainOutput,
+      }),
+    });
+  } finally {
+    releaseAll();
+    gateServer?.closeAllConnections();
+    if (gateServer?.listening)
+      await new Promise<void>((resolve) => gateServer!.close(() => resolve()));
+    if (app) {
+      const paths = app.paths;
+      try {
+        await app.shutdown();
+      } finally {
+        removeTempDirs(paths);
+        app = undefined;
+      }
+    }
+  }
 });

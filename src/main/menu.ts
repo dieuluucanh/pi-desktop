@@ -100,22 +100,6 @@ const SESSION_ITEMS: readonly ItemSpec[] = [
   { command: "thinking-cycle", label: "Cycle Thinking Level", accelerator: "CmdOrCtrl+Alt+T" },
 ];
 
-/**
- * The Workflow todo panel (2026-11-18 toe-panel plan).
- *
- * The explicit verbs mirror `/todos auto|expand|collapse|hide`; `todos-toggle`
- * expands a hidden/collapsed panel and collapses an expanded one, matching the
- * extension's terminal `Ctrl+Alt+O`. The desktop chord is `Ctrl+Alt+L` because
- * `Ctrl+Alt+O` is already Sessions (see VIEW_ITEMS).
- */
-const TODO_ITEMS: readonly ItemSpec[] = [
-  { command: "todos-auto", label: "Automatic" },
-  { command: "todos-expand", label: "Show Full Todo List" },
-  { command: "todos-collapse", label: "Collapse Todo List to One Line" },
-  { command: "todos-hide", label: "Hide Todo Panel" },
-  { command: "todos-toggle", label: "Toggle Todo Panel", accelerator: "CmdOrCtrl+Alt+L" },
-];
-
 const GO_ITEMS: readonly ItemSpec[] = [
   { command: "view-explorer", label: "Explorer", accelerator: "CmdOrCtrl+Shift+E" },
   { command: "view-source-control", label: "Source Control" },
@@ -220,7 +204,6 @@ export function menuTemplate(deps: AppMenuDeps): MenuItemConstructorOptions[] {
     label: "View",
     submenu: [
       ...toItems(VIEW_ITEMS, onCommand, accelerators),
-      { label: "Todo Panel", submenu: toItems(TODO_ITEMS, onCommand, accelerators) },
       { type: "separator" },
       // The session view grid presets (2026-11-03 plan).
       ...toItems(LAYOUT_ITEMS, onCommand, accelerators),

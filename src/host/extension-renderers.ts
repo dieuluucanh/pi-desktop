@@ -36,7 +36,7 @@ import type { HostHandler } from "./service";
 
 /** A structural pi-tui `Component`. */
 export interface RendererComponent {
-  render(width: number): string[];
+  render(width: number): readonly string[];
   invalidate?(): void;
   dispose?(): void;
 }

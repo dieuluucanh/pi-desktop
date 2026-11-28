@@ -14,6 +14,11 @@
 
 ## Release notes
 
+- [`releases/v0.12.0.md`](releases/v0.12.0.md) — v0.12.0 release notes (managed file
+  attachments and document extraction, the generic extension contribution contract and
+  related sessions, the experimental Orchestrator, one working bar and mode cycle, prompt
+  refinement, editor/rail/commit AI, Pi 1.7.0 and Workflow 0.17.5), install table, known
+  limitations and verification status.
 - [`releases/v0.11.0.md`](releases/v0.11.0.md) — v0.11.0 release notes (extension
   dialogs that own the keyboard, one extension-owned Review line below the todo panel, the
   native Workflow todo bar, terminal wheel paging and questionnaire paste, web tabs that
@@ -96,6 +101,9 @@
   History and Checkpoints sections: staging and committing, what a checkpoint is (and is not),
   restoring safely, retention, and `/checkpoint` in terminal Pi.
 - [`guide/plannotator-web-tabs.md`](guide/plannotator-web-tabs.md) — in-app web tabs and reviews.
+- [`guide/prompt-refinement.md`](guide/prompt-refinement.md) — refining a drafted request with
+  `/prompt` and the one-shot composer control: model scope, privacy, images, cancel/conflicts,
+  recovery, bundled/override/disable/safe mode, compatibility and limits.
 - [`guide/troubleshooting.md`](guide/troubleshooting.md) — safe mode, recovery, diagnostics.
 - [`guide/branding.md`](guide/branding.md) — the logo set, which mark belongs to which product, and
   how the icons are wired into the build.
@@ -110,6 +118,9 @@
   protocol, including the RPC mapping table.
 - [`architecture/review-mode-baseline.md`](architecture/review-mode-baseline.md) — the
   Command Code stream-cut evidence and probe matrix behind Review Mode provider recovery.
+- [`architecture/prompt-refinement.md`](architecture/prompt-refinement.md) — prompt-refinement
+  operation, bundled/override/disable/safe-mode behavior, independent upgrade/rollback,
+  compatibility matrix, tested versions and honest acceptance limits.
 - [`architecture/extension-ui.md`](architecture/extension-ui.md) — `ExtensionUIContext`
   member-by-member (the parity doc the definition of done calls `extension-parity.md`) and the
   TUI rendering surface.

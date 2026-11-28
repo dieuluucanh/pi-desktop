@@ -187,3 +187,36 @@ invalid_) — without the prune, a Windows installer cannot be built from a tree
 that also holds a Linux runtime. `afterPack` runs per architecture into its own
 app directory, so a multi-arch Linux or macOS build still ships exactly one
 runtime per package.
+
+## The bundled Workflow extension (plan step 26)
+
+Desktop ships `@dieulc/workflow`, but it never loads it from the developer
+checkout. `scripts/stage-workflow-bundle.mjs` verifies a supplied tarball (or
+the explicitly pinned release artifact) against `resources/workflow.lock.json`
+— sha512 for the tarball plus a sha256 for every packed file — and stages the
+same verified bytes into two layouts: `resources/extensions/workflow` (copied by
+`extraResources` as `extensions/workflow`) and `out/extensions/workflow` (the
+unpacked host-build sibling, written after `out/` is cleaned).
+
+Both layouts sit outside the asar because the bundled Node, not Electron, loads
+them. In a packaged app `src/main/runtime/workflow-bundle.ts` prefers
+`resources/app.asar.unpacked/out/extensions/workflow` and keeps
+`resources/extensions/workflow` as a fallback: the extension imports the Pi SDK
+family and `typebox` as host peers, and Node finds those by walking up from the
+importing file to `app.asar.unpacked/node_modules`. The `extraResources` copy has
+no `node_modules` above it, so preferring it made the builtin appear registered
+while failing to load on any machine that was not the developer checkout (plan
+step 39). Resolution is injected through `resourcesPath`/`appRoot`/`exists` ports
+and refuses a directory without `workflow-bundle.json` and `index.ts`; it has no
+reference to the W checkout. The bundle keeps relative imports (including
+relative dynamic imports), non-code assets and LICENSE/README, while the Pi SDK
+family and `typebox` remain host peers. The staged manifest is sanitized: no
+runtime dependencies and no install-time lifecycle scripts.
+
+`npm run workflow:verify` is the release gate. It re-hashes the staged files,
+rejects an omitted module or a non-peer import, scans for a baked-in checkout
+path, and loads the entry under the **bundled Node** from an isolated temp copy
+with only the host peers linked in. A changed tarball, a stale stage, an extra
+module or a reintroduced `postinstall` fails the gate. There is no publish, tag
+or version bump in this path; updating the pin is
+`npm run workflow:lock -- --tarball <file.tgz>`.

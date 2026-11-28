@@ -15,6 +15,7 @@ import {
   rewritePiPins,
   satisfiesFloor,
 } from "../../scripts/pi-agent-package.mjs";
+import { npmInvocation } from "../../scripts/pi-agent.mjs";
 import type { TargetPins } from "../../scripts/pi-agent-package.mjs";
 
 /**
@@ -82,6 +83,19 @@ describe("readPiPins", () => {
     expect(pins.family["@earendil-works/pi-ai"]).toBeNull();
     expect(pins.typebox).toBeNull();
     expect(readPiPins(null).family[PI_AGENT_PACKAGE]).toBeNull();
+  });
+});
+
+describe("npm invocation", () => {
+  it("goes through cmd.exe on Windows", () => {
+    expect(npmInvocation("win32", { ComSpec: "C:\\Windows\\System32\\cmd.exe" })).toEqual({
+      cmd: "C:\\Windows\\System32\\cmd.exe",
+      args: ["/d", "/s", "/c", "npm"],
+    });
+  });
+
+  it("uses npm directly on POSIX", () => {
+    expect(npmInvocation("linux", {})).toEqual({ cmd: "npm", args: [] });
   });
 });
 

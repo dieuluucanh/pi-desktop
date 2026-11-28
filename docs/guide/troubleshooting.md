@@ -185,7 +185,7 @@ resource. The window shows a safe-mode banner.
 
   ```bash
   mkdir -p /tmp/pty && cd /tmp/pty && npm init -y && npm install node-pty@1.1.0
-  cd /tmp && /path/Pi-Desktop-0.11.0-linux-x86_64-appimage.AppImage --appimage-extract
+  cd /tmp && /path/Pi-Desktop-0.12.0-linux-x86_64-appimage.AppImage --appimage-extract
   cp /tmp/pty/node_modules/node-pty/build/Release/pty.node \
      /tmp/squashfs-root/resources/app.asar.unpacked/node_modules/node-pty/build/Release/
   /tmp/squashfs-root/AppRun
@@ -288,18 +288,22 @@ visible while main still rejects the call.
   Verify a Command Code model in `/model`, then remove the old hand-written
   `command-code` entry from `models.json`. If the failure still recurs on a different
   provider, switch the reviewer (`/profile use …` or `/role set reviewer …`) and retry
-  `/review`; `/review-status` names the model and the last provider error. See
+  `/review`; `/review status` names the model and the last provider error. In the
+  live-switch contract the live review line also names the reviewer model, and a
+  refused switch warns with both the current and target model names while the
+  round keeps running; that contract is active only after the new bundle is
+  released and pinned, not with the currently pinned 0.15.0 bundle. See
   [Review Mode provider baseline](../architecture/review-mode-baseline.md).
 
 - **Manual `/review` shows no “Reviewing” status** — fixed: an extension-owned
   round on an idle tab now renders one review row below the todo panel, with the
   same hint-complete line terminal Pi paints (`🔍 Reviewing plan… · ESC or
-/review-pause to pause · /review-abort to stop`), and forwards Escape, so it
+/review pause to pause · /review abort to stop`), and forwards Escape, so it
   pauses exactly like an automatic round.
 - **The composer refuses my prompt during a review** — that is the isolated Review
   mode (`@dieulc/workflow` 0.11.0+): prose and `!` shell commands are refused while
   the reviewer owns the turn, with a hint and your draft kept. Use the **Review**
-  row (Pause/Resume/Abort), `/review-pause`, `/review-resume`, `/review-abort`, or
+  row (Pause/Resume/Abort), `/review pause`, `/review resume`, `/review abort`, or
   change model/profile. Approve or annotate in the review tab to hand the plan
   back. With an older workflow extension the row falls back to the canonical line
   (the commands and phase are still named), so the controls remain available.
@@ -308,19 +312,19 @@ visible while main still rejects the call.
   Pi process, that process keeps its own browser behaviour; the desktop tab's
   **Open in browser** button is the deliberate escape hatch in the other direction.
 - **The Review row has no Open review tab button** — the linked loopback tab was
-  closed, or the page is not a loopback URL. `/review-abort` still hands the plan
+  closed, or the page is not a loopback URL. `/review abort` still hands the plan
   over, and **Open in browser** in the tab chrome (or the notification row) can
   reopen it.
 - **Review round 2+ does not reopen Plannotator** — fixed: a new round or manual
   `/review` supersedes an older browser gate, stale browser decisions are
   discarded, and the full review correlation is persisted. After a reload the
-  extension asks Plannotator `review-status`; `/review-status` names a pending
+  extension asks Plannotator `review-status`; `/review status` names a pending
   browser handoff and its URL.
 - **Esc does not stop the run during a review** — that is deliberate. Escape is
   sent to the session's extension handlers first (the same path terminal Pi uses),
   and Review Mode pauses the round instead of aborting it: the review row shows
-  `⏸ Review paused — /review-resume to continue, /review-abort to stop`. A second
-  Esc stays paused. Use `/review-resume` to continue, or `/review-abort` to end
+  `⏸ Review paused — /review resume to continue, /review abort to stop`. A second
+  Esc stays paused. Use `/review resume` to continue, or `/review abort` to end
   the round and hand the author's plan over. Outside a review, Esc still stops the
   run as before. If you remapped `app.interrupt` in `keybindings.json` to a chord
   with no terminal encoding (anything but Escape and the byte-encodable chords),
@@ -418,22 +422,23 @@ Diagnostics → Save         redacted support bundle (no credentials)
 The bundle runs `redactSecrets` over the whole document, so it is safe to attach
 to an issue.
 
-## Known limitations in v0.11.0
+## Known limitations in v0.12.0
 
 Every known limitation is recorded with the release notes:
-[`docs/releases/v0.11.0.md`](../releases/v0.11.0.md). The short version:
+[`docs/releases/v0.12.0.md`](../releases/v0.12.0.md). The short version:
 
 - **Unsigned builds** — SmartScreen/Gatekeeper warn on first launch; signing is
   deferred ([backlog](../product/backlog.md)).
 - **macOS and Linux are beta** — built and structurally verified in CI, but no
   real macOS launch and no fresh Linux desktop install have been exercised by a
   person for this release. Windows is the verified target.
-- **The live Review line needs the matching extension** — the desktop prefers the
-  extension's `workflow-review` text, but `@dieulc/workflow` 0.13.0 (which
-  publishes it and the hidden-panel `workflow-todos` status) is a separate
-  package. With 0.12.x the row falls back to the canonical phase line and the
-  todo bar is absent while the list is hidden or Review owns the turn (there is
-  no compact status to read); commands and controls keep working.
+- **The live Review line needs the matching extension** — Review/progress/mode
+  now arrive through the generic contribution contract, so the desktop draws a
+  publisher's own row instead of parsing a Review sub-state. `@dieulc/workflow`
+  0.13.0 publishes it; with an older extension the row falls back to a plain
+  generic status when one is supplied and the review-specific controls are
+  absent. Commands, composer (including the Refine prompt control) and controls
+  keep working.
 - **Extension dialogs diverge from terminal Pi in two deliberate places** —
   Ctrl+C in an input/editor stays copy rather than cancel, and confirm needs a
   focused button for Enter rather than answering the highlighted “Yes”. Both
@@ -504,5 +509,11 @@ useful issue.
 ## Related
 
 - [FAQ](faq.md) · [Getting started](getting-started.md)
-- [Release notes v0.11.0](../releases/v0.11.0.md) · [Backlog](../product/backlog.md)
+- [Release notes v0.12.0](../releases/v0.12.0.md) · [Backlog](../product/backlog.md)
 - [architecture/app-shell.md](../architecture/app-shell.md)
+
+## Attachments
+
+Blocked, over-budget, unsupported or unreadable attachment turns are covered in
+[Attachments](attachments.md), including protocol-restart, storage-full and
+conversion-unavailable states.

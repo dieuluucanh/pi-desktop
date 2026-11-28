@@ -10,6 +10,7 @@ import {
   OFFICE_BRIDGE_PORT,
   createHostSupervisor,
   type HostSpawner,
+  type HostProcessPin,
   type SpawnedHostProcess,
 } from "../../src/main/host-supervisor";
 import { createMemoryFsPort } from "../../src/main/fs-port";
@@ -142,9 +143,14 @@ function harness(
     sessionFile?: string | null;
     maxHosts?: number;
     npmCliPath?: string;
+    /** The real Pi CLI child agents must run (Workflow plan step 30). */
+    piCliPath?: string | null;
+    /** The staged Workflow entry injected into child CLI runs. */
+    workflowBundleEntry?: string | null;
     env?: Record<string, string | undefined>;
     safeMode?: boolean;
-    telemetryEnabled?: boolean | (() => boolean);
+    /** The staged Workflow directory main resolved (plan step 27). */
+    workflowBundleDir?: string | null;
     hostBuildId?: () => string | null;
     /** Log every completed request (0 = log all); absent keeps the 2 s default. */
     slowRequestLogMs?: number;
@@ -185,6 +191,8 @@ function harness(
     profileDir: normalize("C:/Users/Test/.pi/agent"),
     env: options.env ?? { PATH: normalize("C:/Windows/System32") },
     ...(options.npmCliPath ? { npmCliPath: options.npmCliPath } : {}),
+    ...(options.piCliPath ? { piCliPath: options.piCliPath } : {}),
+    ...(options.workflowBundleEntry ? { workflowBundleEntry: options.workflowBundleEntry } : {}),
     spawner,
     fs,
     requestTimeoutMs: 1_000,
@@ -202,7 +210,7 @@ function harness(
       ? {}
       : { memoryOverBudgetSamples: options.memoryOverBudgetSamples }),
     safeMode: options.safeMode ?? false,
-    telemetryEnabled: options.telemetryEnabled ?? false,
+    ...(options.workflowBundleDir ? { workflowBundleDir: options.workflowBundleDir } : {}),
     ...(options.hostBuildId ? { hostBuildId: options.hostBuildId } : {}),
     ...(options.isPinned ? { isPinned: options.isPinned } : {}),
     ...(options.isBridgeOwner ? { isBridgeOwner: options.isBridgeOwner } : {}),
@@ -210,6 +218,109 @@ function harness(
 
   return { supervisor, spawned, spawnCalls, fs };
 }
+
+describe("process reservations", () => {
+  it("reference-counts reservations, releases idempotently and isolates process generations", async () => {
+    const { supervisor } = harness({
+      isPinned: () => {
+        throw new Error("policy failed");
+      },
+    });
+    const host = await supervisor.start({ sessionId: "reserved", cwd: normalize("C:/work") });
+    const first = host.acquirePin();
+    const second = host.acquirePin();
+    expect(host.pinned()).toBe(true);
+    expect(first.isCurrent()).toBe(true);
+    first.release();
+    first.release();
+    expect(first.isCurrent()).toBe(false);
+    expect(host.pinned()).toBe(true);
+    second.release();
+    expect(host.pinned()).toBe(false);
+    const stale = host.acquirePin();
+    await host.restart();
+    expect(stale.isCurrent()).toBe(false);
+    const fresh = host.acquirePin();
+    expect(fresh.generation).toBeGreaterThan(stale.generation);
+    stale.release();
+    expect(host.pinned()).toBe(true);
+    expect(fresh.isCurrent()).toBe(true);
+    fresh.release();
+    expect(host.pinned()).toBe(false);
+    await supervisor.stopAll();
+    expect(() => host.acquirePin()).toThrow();
+  });
+
+  it("protects against idle recycling, including a reservation acquired inside the state probe", async () => {
+    vi.useFakeTimers();
+    const { supervisor, spawned } = harness({
+      idleTimeoutMs: 5,
+      behaviours: [
+        {
+          answer: (request) => {
+            if (request.method === "state.get") {
+              reservation.pin ??= host.acquirePin();
+              return { streaming: false };
+            }
+            return undefined;
+          },
+        },
+      ],
+    });
+    const reservation: { pin: HostProcessPin | null } = { pin: null };
+    const host = await supervisor.start({ sessionId: "reserved", cwd: normalize("C:/work") });
+    try {
+      await vi.advanceTimersByTimeAsync(20);
+      expect(reservation.pin).not.toBeNull();
+      expect(host.pinned()).toBe(true);
+      expect(spawned[0]?.killed).toBe(false);
+      reservation.pin?.release();
+      // The probe does not acquire again: only the first reservation was held.
+      await vi.advanceTimersByTimeAsync(10);
+      expect(spawned[0]?.killed).toBe(true);
+    } finally {
+      await supervisor.stopAll();
+      vi.useRealTimers();
+    }
+  });
+
+  it("honors a reservation acquired while the RSS state probe is in flight", async () => {
+    vi.useFakeTimers();
+    let armed = false;
+    const reservation: { pin: HostProcessPin | null } = { pin: null };
+    const { supervisor, spawned } = harness({
+      memoryPollMs: 5,
+      memoryGraceMs: 0,
+      memoryOverBudgetSamples: 1,
+      maxRssBytes: 100,
+      behaviours: [
+        {
+          answer: (request) => {
+            if (request.method === "host.metrics")
+              return { rssBytes: 200, heapUsedBytes: 1, heapTotalBytes: 1, uptimeMs: 1_000, at: 1 };
+            if (request.method === "state.get") {
+              if (armed) reservation.pin ??= host.acquirePin();
+              return { streaming: !armed };
+            }
+            return undefined;
+          },
+        },
+      ],
+    });
+    const host = await supervisor.start({ sessionId: "reserved", cwd: normalize("C:/work") });
+    try {
+      armed = true;
+      await vi.advanceTimersByTimeAsync(10);
+      expect(reservation.pin).not.toBeNull();
+      expect(host.pinned()).toBe(true);
+      expect(spawned[0]?.killed).toBe(false);
+      reservation.pin?.release();
+    } finally {
+      await supervisor.stopAll();
+      vi.useRealTimers();
+    }
+  });
+});
 
 describe("host supervisor startup", () => {
   it("spawns with the bundled runtime, the shim PATH and the session env", async () => {
@@ -293,6 +404,50 @@ describe("host supervisor startup", () => {
     const { supervisor, spawnCalls } = harness();
     await supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
     expect(spawnCalls[0]?.env).not.toHaveProperty("PI_DESKTOP_NPM_CLI");
+  });
+
+  it("hands hosts the real Pi CLI for child agents, never the host entry", async () => {
+    const piCliPath = normalize(
+      "C:/app/resources/app.asar.unpacked/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js",
+    );
+    const { supervisor, spawnCalls } = harness({ piCliPath });
+    await supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
+    expect(spawnCalls[0]?.env.PI_SUBAGENT_PI_CLI).toBe(piCliPath);
+    expect(spawnCalls[0]?.env.PI_SUBAGENT_PI_NODE).toBe(NODE_PATH);
+  });
+
+  it("omits the Pi CLI variable when the SDK bundle is missing", async () => {
+    const { supervisor, spawnCalls } = harness();
+    await supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
+    expect(spawnCalls[0]?.env).not.toHaveProperty("PI_SUBAGENT_PI_CLI");
+  });
+
+  it("lists the host markers a child CLI must not inherit", async () => {
+    const { supervisor, spawnCalls } = harness();
+    await supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
+    const strip = String(spawnCalls[0]?.env.PI_SUBAGENT_ENV_STRIP ?? "");
+    for (const name of [
+      "PI_DESKTOP_HOST_MODE",
+      "PI_DESKTOP_HOST_ROLE",
+      "PI_DESKTOP_SESSION_ID",
+      "PI_DESKTOP_HOST_BUILD",
+      "PI_DESKTOP_HOST_ENTRY",
+    ]) {
+      expect(strip.split(",")).toContain(name);
+    }
+  });
+
+  it("injects the staged Workflow entry into child CLI runs, isolated", async () => {
+    const entry = normalize("C:/app/resources/extensions/workflow/index.js");
+    const { supervisor, spawnCalls } = harness({ workflowBundleEntry: entry });
+    await supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
+    expect(spawnCalls[0]?.env.PI_SUBAGENT_WORKFLOW_EXTENSION).toBe(entry);
+    expect(spawnCalls[0]?.env.PI_SUBAGENT_WORKFLOW_ISOLATE).toBe("1");
+
+    const without = harness({ workflowBundleEntry: null });
+    await without.supervisor.start({ sessionId: "s2", cwd: normalize("C:/work") });
+    expect(without.spawnCalls[0]?.env).not.toHaveProperty("PI_SUBAGENT_WORKFLOW_EXTENSION");
+    expect(without.spawnCalls[0]?.env).not.toHaveProperty("PI_SUBAGENT_WORKFLOW_ISOLATE");
   });
 
   it("reserves port 38617 for the Office host and hands out 38618+ to everyone else", async () => {
@@ -933,25 +1088,23 @@ describe("host supervisor reliability (plan step 22)", () => {
     expect(on.spawnCalls[0]?.env.PI_DESKTOP_SAFE_MODE).toBe("1");
   });
 
-  it("forces Pi's install telemetry off unless the user opted in", async () => {
-    const off = harness();
-    await off.supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
-    expect(off.spawnCalls[0]?.env.PI_TELEMETRY).toBe("0");
+  it("hands every host the staged Workflow directory, and nothing when none exists", async () => {
+    const staged = normalize("C:/app/resources/extensions/workflow");
+    const withBundle = harness({ workflowBundleDir: staged });
+    await withBundle.supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
+    expect(withBundle.spawnCalls[0]?.env.PI_DESKTOP_WORKFLOW_BUNDLE_DIR).toBe(staged);
 
-    const on = harness({ telemetryEnabled: true });
-    await on.supervisor.start({ sessionId: "s2", cwd: normalize("C:/work") });
-    expect(on.spawnCalls[0]?.env.PI_TELEMETRY).toBe("1");
+    // No staged artifact: the variable is absent, never an empty path a host
+    // could mistake for a directory named "".
+    const without = harness({ workflowBundleDir: null });
+    await without.supervisor.start({ sessionId: "s2", cwd: normalize("C:/work") });
+    expect(without.spawnCalls[0]?.env).not.toHaveProperty("PI_DESKTOP_WORKFLOW_BUNDLE_DIR");
   });
 
-  it("reads the telemetry preference at each spawn, so a change applies live", async () => {
-    let enabled = false;
-    const { supervisor, spawnCalls } = harness({ telemetryEnabled: () => enabled });
-    await supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
-    expect(spawnCalls[0]?.env.PI_TELEMETRY).toBe("0");
-
-    enabled = true;
-    await supervisor.start({ sessionId: "s2", cwd: normalize("C:/work") });
-    expect(spawnCalls[1]?.env.PI_TELEMETRY).toBe("1");
+  it("does not inject Pi's removed install-telemetry variable", async () => {
+    const host = harness();
+    await host.supervisor.start({ sessionId: "s1", cwd: normalize("C:/work") });
+    expect(host.spawnCalls[0]?.env).not.toHaveProperty("PI_TELEMETRY");
   });
 });
 

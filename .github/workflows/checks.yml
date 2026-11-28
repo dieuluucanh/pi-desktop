@@ -32,9 +32,9 @@ jobs:
       - name: Install
         run: npm ci
 
-      # The npm tarball ships node-pty's POSIX spawn-helper with mode 0644 and the
-      # installer accepts the prebuild, so node-gyp never fixes it. The package
-      # postinstall runs the same script; make it explicit here too.
+      # The npm tarball ships node-pty's POSIX spawn-helper with mode 0644
+      # and the installer accepts the prebuild, so node-gyp never fixes it.
+      # The package postinstall runs the same script; make it explicit here too.
       - name: Make the POSIX node-pty helper executable
         if: matrix.os != 'windows-latest'
         run: node scripts/fix-node-pty-permissions.mjs
@@ -57,9 +57,16 @@ jobs:
       - name: Build the terminal host bundle
         run: npm run build:host
 
+      - name: Stage the pinned Workflow bundle
+        run: npm run workflow:stage
+
+      - name: Verify the staged Workflow bundle
+        run: npm run workflow:verify -- --offline --require-dev
+
       - name: Unit + integration tests
         env:
           PI_REQUIRE_TERMINAL_HOST: "1"
+          PI_REQUIRE_WORKFLOW_BUNDLE: "1"
         run: npm test
 
       # The release compiles node-pty in a pinned Debian 11 container. Exercise
@@ -107,6 +114,9 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      - name: Stage the pinned Workflow bundle
+        run: npm run workflow:stage
 
       # The full E2E suite: shell smoke, the startup budget, and the
       # deterministic-fake-provider flows (session, settings, persistence, web

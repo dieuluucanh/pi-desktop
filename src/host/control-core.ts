@@ -18,6 +18,8 @@ import {
   type ResourceInspector,
 } from "./resources";
 import { createThemeHandlers, THEME_METHODS, type ThemePort } from "./themes";
+import { createTextGenerationHandlers, TEXT_GENERATION_METHODS } from "./text-generation";
+import type { WorkflowBuiltinResolution } from "./workflow-builtin";
 import { resolveListedSession, SessionFileError } from "./session-files";
 import { createSettingsHandlers, SETTINGS_METHODS, type SettingsPort } from "./settings";
 import type { HostHandler } from "./service";
@@ -66,6 +68,12 @@ export interface ControlCoreDeps {
    * `not_implemented` instead of pretending it has no resources.
    */
   resources?: ResourceInspector;
+  /**
+   * The bundled Workflow builtin (plan step 27), resolved once per host process.
+   * `resources.list` reports its version/source/replacement state next to the
+   * loaded extensions, so the hub describes the same copy sessions load.
+   */
+  workflowBuiltin?: WorkflowBuiltinResolution | null;
   /** The cwd used when the hub does not name a project (the host's own cwd). */
   defaultCwd?: string;
   /**
@@ -123,6 +131,10 @@ export const CONTROL_METHODS: readonly HostMethod[] = [
   // control host never has.
   ...THEME_METHODS,
   ...KEYBINDING_METHODS,
+  // Session-less text generation (2026-11-25 plan, step 16): one-shot
+  // `completeSimple` calls for the commit message. No session, so no
+  // `prompt`/`commands.run` and nothing that touches a JSONL.
+  ...TEXT_GENERATION_METHODS,
 ];
 
 export interface ControlCore {
@@ -202,6 +214,7 @@ export function createControlCore(deps: ControlCoreDeps): ControlCore {
             scope: "control",
             settings,
             source,
+            ...(deps.workflowBuiltin ? { builtin: deps.workflowBuiltin } : {}),
             now: deps.now,
           });
         },
@@ -215,6 +228,13 @@ export function createControlCore(deps: ControlCoreDeps): ControlCore {
           deps.createThemePort?.(requested ?? deps.defaultCwd ?? "") ?? null,
       }).handlers(),
       ...createKeybindingHandlers({ resolvePort: () => deps.keybindings ?? null }).handlers(),
+      // One-shot generation (2026-11-25 plan, step 16). Registered even when the
+      // provider port is absent: the handlers then answer `not_implemented`,
+      // which keeps `handlers() == CONTROL_METHODS` true for every host shape.
+      ...createTextGenerationHandlers({
+        resolvePort: () => deps.providers?.completion ?? null,
+        settings: deps.settings,
+      }).handlers(),
     }),
 
     dispose: async () => {

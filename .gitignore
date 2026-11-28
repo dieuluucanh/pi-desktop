@@ -17,6 +17,13 @@ resources/runtime/*
 !resources/runtime/README.md
 !resources/runtime/node.lock.json
 
+# The staged Workflow bundle is generated from a pinned tarball
+# (`npm run workflow:stage`) and must never be committed. The lockfile and the
+# directory README are the tracked facts.
+resources/extensions/*
+!resources/extensions/README.md
+resources/workflow/*.tgz
+
 # Playwright artifacts
 /test-results/
 /playwright-report/

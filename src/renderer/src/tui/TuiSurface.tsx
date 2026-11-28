@@ -7,7 +7,7 @@ import {
   domWheelToTerminalData,
   isPasteChord,
 } from "../../../shared/terminal-keys";
-import type { TuiFrame, TuiSurfaceSnapshot } from "../../../shared/tui-surface";
+import type { TuiFrame, TuiSurfaceLayer, TuiSurfaceSnapshot } from "../../../shared/tui-surface";
 import { useAppStore } from "../state/app-store";
 import { copyText, readClipboardText, selectedTextWithin } from "../ui/clipboard";
 import { createPasteIntake, type PasteSource } from "../ui/paste-intake";
@@ -184,6 +184,11 @@ export function TuiSlotFrame({ frame, className }: TuiSlotFrameProps): ReactElem
 export interface TuiSurfaceProps {
   tabId: string;
   snapshot: TuiSurfaceSnapshot;
+  /**
+   * One mounted surface from the stack. Absent renders the snapshot's top
+   * surface (the legacy single-slot contract).
+   */
+  layer?: TuiSurfaceLayer;
   /** The session viewport's monospace cell (measured by `SessionView`). */
   cell: CellSize;
   /** The session viewport's grid; sizes a docked sheet and clamps a float. */
@@ -197,6 +202,12 @@ export interface TuiSurfaceProps {
   variant: "dock" | "float";
   /** Bumped when the session view reclaims the keyboard for this surface. */
   focusToken?: number;
+  /**
+   * True only for the focused pane. A background pane must never take DOM focus
+   * or claim terminal keyboard ownership just because its extension repainted
+   * (2026-11-22 parity row 28); it badges its tab instead.
+   */
+  active?: boolean;
 }
 
 /**
@@ -206,10 +217,12 @@ export interface TuiSurfaceProps {
 export function TuiSurface({
   tabId,
   snapshot,
+  layer,
   cell,
   grid,
   variant,
   focusToken = 0,
+  active = true,
 }: TuiSurfaceProps): ReactElement | null {
   const sendTuiInput = useAppStore((state) => state.sendTuiInput);
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -253,10 +266,13 @@ export function TuiSurface({
     cell,
   );
 
-  const frame = snapshot.custom;
+  const topLayer = snapshot.layers.at(-1);
+  const frame = layer?.frame ?? topLayer?.frame ?? snapshot.custom;
+  const isOverlay = layer?.overlay ?? topLayer?.overlay ?? snapshot.overlay;
+  const bounds = layer?.bounds ?? topLayer?.bounds ?? snapshot.bounds;
   useEffect(() => {
-    if (frame) containerRef.current?.focus();
-  }, [frame, focusToken]);
+    if (frame && active) containerRef.current?.focus();
+  }, [frame, focusToken, active]);
 
   // Main routes a menu/context-menu Paste to the tab whose extension frame owns
   // the keyboard; another tab's surface must not answer it.
@@ -277,6 +293,9 @@ export function TuiSurface({
   }, [tabId]);
 
   const reportFocus = (focused: boolean): void => {
+    // Only the focused pane may report keyboard ownership: a background pane's
+    // frame would otherwise reroute the menu Paste of the pane the user is in.
+    if (!active) return;
     window.pi?.tui?.setFocus(tabId, focused);
   };
   const handleBlur = (event: React.FocusEvent<HTMLDivElement>): void => {
@@ -325,7 +344,6 @@ export function TuiSurface({
   );
 
   if (variant === "float") {
-    const bounds = snapshot.bounds;
     const column = { width: grid.cols * cell.width, height: grid.rows * cell.height };
     const rect = bounds
       ? overlayPixelRect(bounds, cell, column)
@@ -334,7 +352,7 @@ export function TuiSurface({
       <div
         ref={containerRef}
         tabIndex={0}
-        autoFocus
+        autoFocus={active}
         data-tui-overlay=""
         data-tui-surface="overlay"
         aria-label="Extension dialog"
@@ -359,9 +377,9 @@ export function TuiSurface({
     <div
       ref={containerRef}
       tabIndex={0}
-      autoFocus
+      autoFocus={active}
       data-tui-surface="dock"
-      aria-label={snapshot.overlay ? "Extension dialog" : "Extension input"}
+      aria-label={isOverlay ? "Extension dialog" : "Extension input"}
       className="group relative flex min-h-0 shrink flex-col overflow-hidden border-t border-line bg-surface outline-none"
       style={{ maxHeight: dockMaxHeight }}
       onKeyDown={input.onKeyDown}
@@ -369,7 +387,7 @@ export function TuiSurface({
       onFocus={() => reportFocus(true)}
       onBlur={handleBlur}
     >
-      {snapshot.overlay ? null : (
+      {isOverlay ? null : (
         <div className="flex shrink-0 items-center gap-2 border-b border-line px-2 py-1 text-[11px] text-ink-faint">
           <span className="font-medium text-ink-muted">Extension UI</span>
           <span>keys are forwarded to the extension</span>
@@ -388,7 +406,7 @@ export function TuiSurface({
         </div>
       )}
       {body}
-      {snapshot.overlay ? copyFloating : null}
+      {isOverlay ? copyFloating : null}
     </div>
   );
 }

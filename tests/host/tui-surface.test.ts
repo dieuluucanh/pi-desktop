@@ -449,3 +449,97 @@ describe("resolveOverlayLayout", () => {
     ).toMatchObject({ row: 38, col: 80 });
   });
 });
+
+describe("tui surface stack (row 28)", () => {
+  it("renders a base custom and an overlay together, top last", async () => {
+    const { port, frames } = harness();
+    const review = port.custom<string>(() => component(() => ["review pane"]), {});
+    const question = port.custom<string>(() => component(() => ["question"]), {
+      overlay: true,
+      overlayOptions: { width: 20, anchor: "bottom-center" },
+    });
+    await tick();
+
+    const snapshot = frames().at(-1);
+    expect(snapshot?.layers.map((layer) => layer.frame.lines[0])).toEqual([
+      "review pane",
+      "question",
+    ]);
+    expect(snapshot?.layers[0]?.overlay).toBe(false);
+    expect(snapshot?.layers[1]?.overlay).toBe(true);
+    expect(snapshot?.layers[1]?.focused).toBe(true);
+    // The legacy single-slot fields still describe the top surface.
+    expect(snapshot?.custom?.lines).toEqual(["question"]);
+    expect(snapshot?.overlay).toBe(true);
+
+    // The base pane is still mounted and still rendered underneath.
+    expect(snapshot?.layers[0]?.frame.lines).toEqual(["review pane"]);
+    void review;
+    void question;
+  });
+
+  it("keeps two overlays stacked and restores the previous owner's focus when one closes", async () => {
+    const { port, frames } = harness();
+    let doneOuter: ((result: string) => void) | undefined;
+    let doneInner: ((result: string) => void) | undefined;
+    const outer = port.custom<string>(
+      (_tui, done) => {
+        doneOuter = done;
+        return component(() => ["outer"]);
+      },
+      { overlay: true },
+    );
+    await tick();
+    const inner = port.custom<string>(
+      (_tui, done) => {
+        doneInner = done;
+        return component(() => ["inner"]);
+      },
+      { overlay: true },
+    );
+    await tick();
+
+    expect(
+      frames()
+        .at(-1)
+        ?.layers.map((layer) => layer.frame.lines[0]),
+    ).toEqual(["outer", "inner"]);
+    expect(
+      frames()
+        .at(-1)
+        ?.layers.filter((layer) => layer.focused),
+    ).toHaveLength(1);
+    expect(frames().at(-1)?.layers.at(-1)?.focused).toBe(true);
+
+    doneInner?.("inner-result");
+    await expect(inner).resolves.toBe("inner-result");
+    await tick();
+    expect(
+      frames()
+        .at(-1)
+        ?.layers.map((layer) => layer.frame.lines[0]),
+    ).toEqual(["outer"]);
+    expect(frames().at(-1)?.layers[0]?.focused).toBe(true);
+
+    doneOuter?.("outer-result");
+    await expect(outer).resolves.toBe("outer-result");
+    await tick();
+    expect(frames().at(-1)?.layers).toEqual([]);
+    expect(frames().at(-1)?.active).toBe(false);
+  });
+
+  it("resolves pending custom components and clears the stack on reset", async () => {
+    const { port, frames } = harness();
+    const base = port.custom<string>(() => component(() => ["base"]));
+    const overlay = port.custom<string>(() => component(() => ["overlay"]), { overlay: true });
+    await tick();
+    expect(frames().at(-1)?.layers).toHaveLength(2);
+
+    port.reset();
+    await expect(base).resolves.toBeUndefined();
+    await expect(overlay).resolves.toBeUndefined();
+    await tick();
+    expect(frames().at(-1)?.layers).toEqual([]);
+    expect(frames().at(-1)?.custom).toBeNull();
+  });
+});

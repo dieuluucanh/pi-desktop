@@ -20,12 +20,15 @@ import {
   hasTrustRequiringProjectResources,
 } from "@earendil-works/pi-coding-agent";
 import { checkpointExtensionLoaderOptions } from "../safe-mode";
+import { workflowBuiltinLoaderOptions } from "./workflow-builtin";
+import type { WorkflowBuiltinResolution } from "../workflow-builtin";
 import { resolveSessionScope } from "./model-scope";
 import type {
   AgentSession,
   AgentSessionEvent,
   AgentSessionServices,
   CreateAgentSessionRuntimeFactory,
+  EventBus,
 } from "@earendil-works/pi-coding-agent";
 
 export {
@@ -58,6 +61,12 @@ export type SessionRuntimeFactory = (options: {
   npmCommand?: readonly string[] | null;
   /** Safe mode (plan step 22): disable every resource-loader collection. */
   safeMode?: boolean;
+  /**
+   * The host's shared extension event bus. Supplying it is what makes `pi.events`
+   * a known instance the contribution bridge can listen on; without it the
+   * loader creates a private bus and no host bridge can see publications.
+   */
+  eventBus?: EventBus | null;
   /** Whether the project is trusted, so its `.pi/settings.json` may be read. */
   projectTrusted?: boolean;
   /**
@@ -66,6 +75,12 @@ export type SessionRuntimeFactory = (options: {
    * does *not* gate `additionalExtensionPaths`.
    */
   checkpointsExtensionPath?: string | null;
+  /**
+   * The bundled Workflow copy as `builtin:workflow` (plan step 27). The host
+   * composition root resolves it once per process from the staged directory main
+   * handed over, so a session and the Extensions hub register the same artifact.
+   */
+  workflowBuiltin?: WorkflowBuiltinResolution | null;
   /**
    * Reports the duration of the three sub-phases this adapter owns, so the host
    * can attribute an open to services (extensions), scope resolution or session
@@ -107,10 +122,18 @@ export const createSdkSessionRuntime: SessionRuntimeFactory = async (options) =>
       // Safe mode (plan step 22) and the app's own checkpoint extension (step 24)
       // share one decision: in safe mode the options disable every collection
       // *and* drop the extra path, because `noExtensions` alone does not.
-      resourceLoaderOptions: checkpointExtensionLoaderOptions({
-        safeMode: options.safeMode,
-        extensionPath: options.checkpointsExtensionPath,
-      }),
+      resourceLoaderOptions: {
+        ...checkpointExtensionLoaderOptions({
+          safeMode: options.safeMode,
+          extensionPath: options.checkpointsExtensionPath,
+        }),
+        // The bundled Workflow extension as a *named builtin* (plan step 27):
+        // disabled by `-builtin:workflow`/safe mode through the SDK's own rules,
+        // replaceable by an installed copy, and never forced in through
+        // `additionalExtensionPaths`. Empty in safe mode or without an artifact.
+        ...workflowBuiltinLoaderOptions(options.workflowBuiltin),
+        ...(options.eventBus ? { eventBus: options.eventBus } : {}),
+      },
     });
     options.onPhase?.("services", Date.now() - servicesStartedAt);
     // Resolve `enabledModels` exactly as terminal Pi does at startup. The scope
@@ -291,6 +314,15 @@ export {
   type SdkUiSurface,
 } from "./extension-ui";
 
+/** Composer-transform ports (prompt-refinement row 14): provenance + companion invocation. */
+export {
+  composerCommandRegistrations,
+  createSdkComposerTransformHost,
+  nodeComposerRandomBytes,
+  type SdkComposerTransformOptions,
+  type SdkComposerTransformRunner,
+} from "./composer-transform";
+
 /** The extension TUI surface (plan step 17): pi-tui helpers, keybindings, footer data. */
 export {
   createSdkFooterData,
@@ -298,5 +330,6 @@ export {
   createSdkTuiSurface,
   sdkEditorTheme,
   SDK_TUI_KIT,
+  type SdkFooterFacts,
   type SdkTuiSurfaceOptions,
 } from "./tui-surface";

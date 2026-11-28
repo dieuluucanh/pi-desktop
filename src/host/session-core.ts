@@ -1,5 +1,47 @@
 import type { HostMethod } from "../shared/host-protocol";
+import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
+import {
+  ATTACHMENT_DELIVERY_VERSION,
+  ATTACHMENT_LIMITS,
+  attachmentTranscriptCard,
+  isAttachmentId,
+  isWellFormedAttachmentText,
+  validateAttachmentPromptRequest,
+  type AttachmentAttemptId,
+  type AttachmentDeliveryPlan,
+  type AttachmentDeliveryScope,
+  type AttachmentPlanId,
+  type AttachmentModelIdentity,
+  type AttachmentPromptResult,
+  type AttachmentSubmissionAssociation,
+  type AttachmentTranscriptCard,
+  type AttachmentTurnId,
+  type AuthorizedAttachmentAsset,
+} from "../shared/attachments";
+import {
+  createAttachmentPlanInput,
+  createAttachmentReadinessPolicyContext,
+  estimateAttachmentHistory,
+} from "./attachment-context";
+import { evaluateModelChange, evaluatePromptRoute } from "./prompt-route-policy";
+import { createAttachmentDispatchCoordinator } from "./attachment-dispatch";
+import {
+  createAttachmentPlanner,
+  evaluateAttachmentPolicy,
+  type AttachmentPlanInput,
+  type AttachmentPolicyAsset,
+} from "./attachment-plan";
+import { validateLegacyImages } from "./legacy-image-compat";
+import {
+  materializeAttachmentPrompt,
+  type MaterializedAttachmentPrompt,
+} from "./attachment-materialize";
+import type { AttachmentTransferReader, AttachmentTransferStore } from "./attachment-transfer";
+import type {
+  AttachmentImagePreparationStore,
+  PreparationPart,
+} from "./attachment-image-preparation";
 import {
   KEYBINDING_DEFINITIONS,
   resolveKeybindings as resolveEffectiveKeybindings,
@@ -28,9 +70,32 @@ import {
   type TrustAnswer,
   type TrustStoreLike,
 } from "./project-trust";
-import { createCommandHandlers, type CommandRunner } from "./commands";
+import { createCommandHandlers, runCommand, type CommandRunner } from "./commands";
+import {
+  createContributionHost,
+  type ContributionBridge,
+  type ContributionBus,
+  type ContributionHost,
+} from "./contributions";
+import {
+  type ComposerTransformControlPort,
+  type ComposerTransformHost,
+} from "./composer-transform";
+import { COMPOSER_CONTROL_KIND as COMPOSER_CONTROL_CONTRIBUTION_KIND } from "../shared/composer-transform";
+import {
+  createSessionHostBridge,
+  type RelatedSessionOwner,
+  type SessionHostBridge,
+} from "./related-sessions";
+import {
+  RELATED_SESSION_VERSION,
+  validateBootstrapEntries,
+  type RelatedSessionCapabilities,
+  type SessionBootstrapEntry,
+} from "../shared/related-sessions";
 import { isTrustAnswer } from "../shared/projects";
 import { createPromptOriginTracker } from "./prompt-origin";
+import { createQueueOriginTracker, type QueueKind } from "./queue-origin";
 import { createSettingsHandlers, SettingsError, type SettingsPort } from "./settings";
 import { createShortcutHandlers, ShortcutError, type ShortcutRunner } from "./shortcuts";
 import { createThemeHandlers, type ThemePort } from "./themes";
@@ -40,6 +105,7 @@ import {
   type KeybindingPort,
 } from "./keybindings";
 import { buildResourcesSnapshot } from "./resources";
+import type { WorkflowBuiltinResolution } from "./workflow-builtin";
 import type { FileListing } from "../workspace/file-listing";
 import type { WorkspaceReadResult } from "../workspace/workspace-files";
 import type { HostHandler } from "./service";
@@ -59,6 +125,15 @@ import type { HostHandler } from "./service";
 export interface ClearedQueue {
   steering?: readonly string[];
   followUp?: readonly string[];
+}
+
+/**
+ * The host's `clearQueue` answer: the user's cleared texts plus how many
+ * extension-owned turns the SDK's all-or-nothing clear discarded.
+ */
+export interface ClearQueueResult {
+  cleared: ClearedQueue | null;
+  dropped: number;
 }
 
 /**
@@ -189,6 +264,12 @@ export interface SessionManagerLike {
 export interface SessionManagerHandle {
   /** Persists the session (the SDK writes the v3 JSONL header) and names it. */
   appendSessionInfo?(name: string): string;
+  /**
+   * Writes one entry to the JSONL before the runtime is created. Used for the
+   * bounded related-session bootstrap, which must be visible to extensions on
+   * their `session_start` (never as a turn trigger).
+   */
+  appendMessage?(message: unknown): string;
   getSessionFile?(): string | undefined;
   /** Session tree access for `entries.get` / `tree.get` / `session.forkMessages`. */
   getEntries?(): readonly unknown[];
@@ -229,6 +310,22 @@ export interface BashPort {
     command: string,
     options: { excludeFromContext: boolean; cwd: string },
   ): Promise<BashRunOutcome>;
+}
+
+export interface AttachmentDispatchPortInput {
+  readonly session: HostSession;
+  readonly turnId: AttachmentTurnId;
+  readonly attemptId: AttachmentAttemptId;
+  readonly planId: AttachmentPlanId;
+  readonly sourceTextSha256: string;
+  readonly scope: AttachmentDeliveryScope;
+  readonly assets: readonly AuthorizedAttachmentAsset[];
+  readonly expectedModel: AttachmentModelIdentity;
+  readonly text: string;
+  readonly images: MaterializedAttachmentPrompt["images"];
+  revalidate(): Promise<boolean>;
+  isCurrent(): boolean;
+  onLateFailure?(): void;
 }
 
 export interface RuntimeLike {
@@ -293,6 +390,12 @@ export interface SessionRuntimeRequest {
   agentDir: string;
   sessionManager: SessionManagerHandle;
   npmCommand?: readonly string[] | null;
+  /**
+   * The shared extension event bus (`pi.events`), supplied by the composition
+   * root from `src/host/sdk`. Passing it into the runtime loader is what makes
+   * an extension's `pi.events` the same instance the contribution bridge uses.
+   */
+  eventBus?: ContributionBus | null;
   /** Safe mode (plan step 22): load no third-party extensions/skills/prompts/themes. */
   safeMode?: boolean;
   /** Whether the project is trusted, so its `.pi/settings.json` may be read. */
@@ -303,10 +406,39 @@ export interface SessionRuntimeRequest {
    */
   checkpointsExtensionPath?: string | null;
   /**
+   * The bundled Workflow copy as `builtin:workflow` (plan step 27). The runtime
+   * adapter turns a registered resolution into the loader's `extensionFactories`;
+   * the SDK then owns enable/disable (`-builtin:workflow`, trust, safe mode) and
+   * replacement by an installed copy.
+   */
+  workflowBuiltin?: WorkflowBuiltinResolution | null;
+  /**
    * Sub-phase timings this request wants reported (2026-11-07 plan). Passed
    * through to the SDK adapter, which owns `services`/`scope`/`session`.
    */
   onPhase?: (phase: "services" | "scope" | "session", ms: number) => void;
+}
+
+/**
+ * The SDK-free ports the composition root needs to build the composer-transform
+ * host. Registrations and the command runner are getters because a rebind can
+ * replace the live extension runner.
+ */
+export interface ComposerTransformFactoryOptions {
+  bus?: ContributionBus | null;
+  controls: ComposerTransformControlPort;
+  registrations(): readonly unknown[];
+  commands(): CommandRunner | null;
+  binding(): { sessionId: string | null; epoch: number };
+  emit(event: string, payload?: unknown, sessionId?: string): void;
+  onError(error: unknown): void;
+  log(line: string): void;
+}
+
+interface AttachmentSubmissionTranscriptRecord {
+  readonly association: AttachmentSubmissionAssociation;
+  /** Exact message object from its persisted SessionManager entry. */
+  readonly message: unknown;
 }
 
 export interface SessionCoreDeps {
@@ -318,6 +450,12 @@ export interface SessionCoreDeps {
   safeMode?: boolean;
   /** The bundled checkpoint extension (git-checkpoint plan step 24). Safe mode wins. */
   checkpointsExtensionPath?: string | null;
+  /**
+   * The bundled Workflow builtin (plan step 27), resolved once per host process.
+   * Used for the runtime request *and* for `resources.list`, so the Extensions
+   * hub reports the same copy/version the session registered.
+   */
+  workflowBuiltin?: WorkflowBuiltinResolution | null;
   /** Creates the SDK runtime (see `src/host/sdk/index.ts`). */
   createRuntime(
     request: SessionRuntimeRequest,
@@ -360,6 +498,28 @@ export interface SessionCoreDeps {
    * not live on the session itself.
    */
   bindSession?(session: HostSession, runtime: RuntimeLike): Promise<void>;
+  /**
+   * The shared extension event bus (`pi.events`) for this host process. The
+   * composition root supplies the same instance it hands the runtime loader, so
+   * extension publications and the contribution bridge meet on one bus.
+   */
+  contributionBus?: ContributionBus | null;
+  /**
+   * Wires the generic contribution registry to the extension event bus
+   * (orchestrator plan step 8). Null/absent means no native contributions: the
+   * registry still answers `contributions.state` with an empty, supported
+   * snapshot, so a renderer never falls back to parsing extension status text.
+   */
+  createContributionBridge?(host: ContributionHost): ContributionBridge | null;
+  /**
+   * Composer-transform operation host (prompt-refinement row 14). The
+   * composition root supplies the SDK ports from `src/host/sdk/composer-transform.ts`;
+   * the core stays SDK-free. Absent means this host advertises no
+   * composer-transform capability and the renderer keeps the text fallback.
+   */
+  createComposerTransformHost?(
+    options: ComposerTransformFactoryOptions,
+  ): ComposerTransformHost | null;
   /**
    * Observes extension-driven model/thinking selections (workflow `/profile`,
    * role switches). Pi announces `model_select` only on the extension runner,
@@ -424,6 +584,25 @@ export interface SessionCoreDeps {
   readChangelog?(): Promise<{ path: string; text: string | null }>;
   emit(event: string, payload?: unknown, sessionId?: string): void;
   now?: () => number;
+  /** Creates the private bounded receiver with a live session/idle fence. */
+  createAttachmentTransferStore?(
+    current: (scope: AttachmentDeliveryScope) => boolean,
+  ): AttachmentTransferStore;
+  /**
+   * Purpose-scoped original-image preparation receiver (plan step 6). It only
+   * decodes/resizes an owner-checked original and hands prepared bytes back to
+   * main; it creates no delivery representation and grants no renderer access.
+   */
+  createAttachmentImagePreparation?(): AttachmentImagePreparationStore;
+  /** Public SDK adapter, injected from `src/host/sdk/attachments.ts`. */
+  dispatchAttachmentPrompt?(input: AttachmentDispatchPortInput): Promise<AttachmentPromptResult>;
+  /** SessionManager-backed attachment records, injected from `src/host/sdk/*`. */
+  listAttachmentSubmissions?(session: HostSession): readonly AttachmentSubmissionAssociation[];
+  /** Branch-scoped association plus its exact persisted message reference. */
+  listAttachmentSubmissionHistory?(
+    session: HostSession,
+  ): readonly AttachmentSubmissionTranscriptRecord[];
+  newAttachmentId?(): string;
 }
 
 export interface SessionCore {
@@ -432,6 +611,12 @@ export interface SessionCore {
   session(): HostSession | null;
   /** Current session identity for event fencing (id + attachment epoch). */
   identity(): { sessionId: string | null; epoch: number };
+  /**
+   * Attachment protocol version this core actually supports, or null when a
+   * required port/handler is missing (plan step 8). The greeting must reflect
+   * this rather than a hard-coded value, and the release gate stays separate.
+   */
+  attachmentDeliverySupport(): number | null;
   /**
    * Phase breakdown of the last `session.create`/`session.resume` in this
    * process, or null before the first (2026-11-07 plan). Optional: the control
@@ -455,12 +640,42 @@ function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
 }
 
+/** Never discard file references; only prompt has the bounded legacy image adapter. */
+function rejectAttachmentFields(input: Record<string, unknown>, allowLegacyImages = false): void {
+  const imageFields = allowLegacyImages ? ["image"] : ["images", "image"];
+  const forbidden = [
+    "attachments",
+    "attachment",
+    "attachmentDelivery",
+    "attachmentPlan",
+    ...imageFields,
+  ];
+  if (forbidden.some((key) => Object.prototype.hasOwnProperty.call(input, key))) {
+    throw new SessionCoreError(
+      "file references require the authorized attachment delivery flow",
+      "bad_request",
+    );
+  }
+}
+
 function requireString(value: unknown, field: string): string {
   if (typeof value !== "string" || value.length === 0) {
     throw new SessionCoreError(`${field} must be a non-empty string`, "bad_request");
   }
   return value;
 }
+
+const ATTACHMENT_ORIGINAL_KINDS = [
+  "text",
+  "image",
+  "pdf",
+  "word",
+  "spreadsheet",
+  "presentation",
+  "audio",
+  "video",
+  "other",
+] as const;
 
 export function createSessionCore(deps: SessionCoreDeps): SessionCore {
   const trust: ProjectTrust = createProjectTrust({
@@ -481,6 +696,359 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
   // Pairs each accepted prompt/command with the user message it produces, so
   // the renderer can name the command instead of showing its expanded body.
   const promptOrigins = createPromptOriginTracker();
+  // Pairs each queued text with who queued it, from a before/after queue diff.
+  const queueOrigins = createQueueOriginTracker();
+
+  /**
+   * Generic extension contributions (orchestrator plan step 8). One registry
+   * per host process: it accepts validated envelopes from any extension, and
+   * `contributions.run` executes an action through the live command runner so
+   * the host validates provenance, availability and the command itself.
+   */
+  const contributionHost = createContributionHost({
+    emit: (event, payload) => deps.emit(event, payload, session?.sessionId ?? undefined),
+    runCommand: async (name, args) => {
+      const runner = liveCommandRunner();
+      if (!runner) return { ran: false, error: "no live extension command runner" };
+      const result = await runCommand(runner, name, args, (report) =>
+        deps.emit("extension_error", report, session?.sessionId ?? undefined),
+      );
+      return {
+        ran: result.ran,
+        ...(result.error === undefined ? {} : { error: result.error }),
+      };
+    },
+  });
+  let contributionBridge: ContributionBridge | null = null;
+  /**
+   * Related-session bridge (orchestrator step 12). Ownership is derived from a
+   * registered command's SDK source info, so `sourceBound` is honest: without a
+   * command runner this capability is false and every request fails closed.
+   */
+  let relatedBridge: SessionHostBridge | null = null;
+
+  /**
+   * Host-minted capability grants for related-session requests. A grant is
+   * bound to one registered command + session + epoch and expires; it is what
+   * separates "this command exists" from "this extension was handed
+   * authority". Delivered to the extension's companion `<command>-bridge`
+   * command on bind, never persisted and never written to a prompt.
+   */
+  let relatedEpoch = 0;
+  let grantSeq = 0;
+  const issuedGrants = new Map<
+    string,
+    {
+      ownerCommand: string;
+      sessionId: string;
+      epoch: number;
+      expiresAt: number;
+    }
+  >();
+  const sessionIdOf = (): string => session?.sessionId ?? "session";
+
+  const mintGrant = (ownerCommand: string) => {
+    grantSeq += 1;
+    const token = `grant-${Date.now().toString(36)}-${grantSeq}-${Math.random()
+      .toString(36)
+      .slice(2, 10)}`;
+    const at = Date.now();
+    const grant = {
+      version: 1 as const,
+      token,
+      ownerCommand,
+      sessionId: sessionIdOf(),
+      epoch: relatedEpoch,
+      issuedAt: at,
+      expiresAt: at + 5 * 60_000,
+    };
+    issuedGrants.set(token, {
+      ownerCommand,
+      sessionId: grant.sessionId,
+      epoch: grant.epoch,
+      expiresAt: grant.expiresAt,
+    });
+    return grant;
+  };
+
+  const acceptGrant = (input: {
+    raw: unknown;
+    ownerCommand: string;
+    sessionId: string;
+    epoch: number;
+  }): { ok: true } | { ok: false; error: string } => {
+    const raw = input.raw as
+      { token?: unknown; ownerCommand?: unknown; sessionId?: unknown; epoch?: unknown } | undefined;
+    const token = typeof raw?.token === "string" ? raw.token : "";
+    if (!token) return { ok: false, error: "the request has no capability grant" };
+    const known = issuedGrants.get(token);
+    if (!known) {
+      return { ok: false, error: "the capability grant was not issued by this host" };
+    }
+    if (Date.now() >= known.expiresAt) {
+      issuedGrants.delete(token);
+      return { ok: false, error: "the capability grant expired" };
+    }
+    // The grant's OWN claims must match the record the host minted AND the live
+    // request: a token cannot be re-labelled to another owner/session/epoch.
+    if (raw?.ownerCommand !== known.ownerCommand || known.ownerCommand !== input.ownerCommand) {
+      return { ok: false, error: "the capability grant belongs to another extension" };
+    }
+    if (raw?.sessionId !== known.sessionId || known.sessionId !== input.sessionId) {
+      return { ok: false, error: "the capability grant belongs to another session" };
+    }
+    if (raw?.epoch !== known.epoch || known.epoch !== input.epoch) {
+      return { ok: false, error: "the capability grant is from a previous host epoch" };
+    }
+    return { ok: true };
+  };
+
+  const relatedCapabilities = (): RelatedSessionCapabilities => {
+    const commands = session?.extensionRunner?.getRegisteredCommands;
+    const sourceBound = typeof commands === "function";
+    return {
+      version: RELATED_SESSION_VERSION,
+      create: true,
+      open: true,
+      focus: true,
+      inspect: true,
+      interrupt: true,
+      close: true,
+      separateWindow: true,
+      bootstrapBeforeStart: true,
+      sourceBound,
+      label: "Pi Desktop",
+      ...(sourceBound
+        ? {}
+        : { reason: "the live session exposes no registered-command source info" }),
+    };
+  };
+
+  const resolveRelatedOwner = (ownerCommand: string): RelatedSessionOwner | null => {
+    const list = session?.extensionRunner?.getRegisteredCommands?.() ?? [];
+    for (const raw of list) {
+      const command = asRecord(raw);
+      if (command.name !== ownerCommand) continue;
+      const info = asRecord(command.sourceInfo);
+      const path = typeof info.path === "string" ? info.path : "";
+      const source = typeof info.source === "string" ? info.source : "";
+      const key = path.length > 0 ? path : source.length > 0 ? `package:${source}` : "";
+      if (key.length === 0) return null;
+      return { key, ...(source.length > 0 ? { label: source } : {}) };
+    }
+    return null;
+  };
+
+  const bindRelatedSessions = (): void => {
+    // A rebind invalidates every grant minted for the previous binding: a
+    // captured token must not authorize a request in the new epoch.
+    relatedEpoch += 1;
+    relatedBridge?.dispose();
+    relatedBridge = null;
+    if (!deps.contributionBus) return;
+    relatedBridge = createSessionHostBridge({
+      bus: deps.contributionBus,
+      capabilities: relatedCapabilities,
+      clock: {
+        now: clock,
+        setTimeout: (callback, ms) => setTimeout(callback, ms),
+        clearTimeout: (handle) => clearTimeout(handle as Parameters<typeof clearTimeout>[0]),
+      },
+      resolveOwner: resolveRelatedOwner,
+      grants: { accept: acceptGrant },
+      sessionId: sessionIdOf,
+      epoch: () => relatedEpoch,
+      forward: (request, owner) => {
+        deps.emit(
+          "host:relatedSession.request",
+          {
+            ...request,
+            ownerKey: owner.key,
+            ...(owner.label === undefined ? {} : { ownerLabel: owner.label }),
+          },
+          session?.sessionId ?? undefined,
+        );
+      },
+      onError: (error) => recordRuntimeError(error),
+    });
+    relatedBridge.announce();
+    void deliverRelatedGrants();
+  };
+
+  /**
+   * Hand each extension a grant through its registered companion command.
+   *
+   * Convention: an extension that wants privileged related-session operations
+   * registers `<ownerCommand>-bridge`; the host invokes it with the JSON grant.
+   * Only code reachable from that registration learns the token, so a payload's
+   * self-declared owner can never authorize an operation. A missing companion
+   * is not an error: that extension simply stays unsupported.
+   */
+  const deliverRelatedGrants = async (): Promise<void> => {
+    const runner = liveCommandRunner();
+    if (!runner) return;
+    const names = new Set(
+      (session?.extensionRunner?.getRegisteredCommands?.() ?? [])
+        .map((entry) => (entry as { name?: unknown }).name)
+        .filter((name): name is string => typeof name === "string"),
+    );
+    for (const ownerCommand of names) {
+      if (!names.has(`${ownerCommand}-bridge`)) continue;
+      const grant = mintGrant(ownerCommand);
+      try {
+        await runCommand(runner, `${ownerCommand}-bridge`, JSON.stringify(grant), (report) =>
+          deps.emit("extension_error", report, session?.sessionId ?? undefined),
+        );
+      } catch (error) {
+        recordRuntimeError(error);
+      }
+    }
+  };
+
+  const liveCommandRunner = (): CommandRunner | null => {
+    const runner = session?.extensionRunner;
+    if (!runner) return null;
+    return deps.wrapCommandRunner?.(runner) ?? null;
+  };
+
+  /**
+   * Composer-transform host (prompt-refinement row 14). Built lazily so a
+   * control/status call before the first session simply reports no capability,
+   * and rebuilt state is reset on every bind. The control port re-reads the
+   * contribution registry, so a renderer can never invent an owner, action or
+   * revision; the adapter re-resolves live command provenance.
+   */
+  let composerTransform: ComposerTransformHost | null | undefined;
+  const composerControls: ComposerTransformControlPort = {
+    resolve({ ownerId, controlId, contributionRevision }) {
+      const entry = contributionHost.entry(ownerId);
+      if (!entry) {
+        return {
+          ok: false,
+          error: { code: "foreign-action", message: `no contribution owner ${ownerId}` },
+        };
+      }
+      if (entry.revision !== contributionRevision) {
+        return {
+          ok: false,
+          error: {
+            code: "stale-revision",
+            message: `the published revision is ${entry.revision}, not ${contributionRevision}`,
+          },
+        };
+      }
+      const control = entry.contributions.find(
+        (contribution) =>
+          contribution.kind === COMPOSER_CONTROL_CONTRIBUTION_KIND && contribution.id === controlId,
+      );
+      if (!control || control.kind !== COMPOSER_CONTROL_CONTRIBUTION_KIND) {
+        return {
+          ok: false,
+          error: { code: "unresolved-action", message: `no composer control ${controlId}` },
+        };
+      }
+      const actions = entry.contributions.flatMap((contribution) =>
+        contribution.kind === "action"
+          ? [
+              {
+                ownerId,
+                id: contribution.id,
+                kind: contribution.kind,
+                label: contribution.label,
+                command: contribution.command,
+              },
+            ]
+          : [],
+      );
+      return { ok: true, control, actions };
+    },
+  };
+
+  const ensureComposerTransform = (): ComposerTransformHost | null => {
+    if (composerTransform !== undefined) return composerTransform;
+    if (!deps.createComposerTransformHost) {
+      composerTransform = null;
+      return null;
+    }
+    composerTransform = deps.createComposerTransformHost({
+      ...(deps.contributionBus ? { bus: deps.contributionBus } : {}),
+      controls: composerControls,
+      registrations: () => session?.extensionRunner?.getRegisteredCommands?.() ?? [],
+      commands: () => liveCommandRunner(),
+      binding: () => ({ sessionId: session?.sessionId ?? null, epoch: sessionEpoch }),
+      emit: (event, payload, eventSessionId) =>
+        deps.emit(event, payload, eventSessionId ?? session?.sessionId ?? undefined),
+      onError: (error) => recordRuntimeError(error),
+      log: (line) =>
+        deps.emit("composer_transform.diagnostic", { line }, session?.sessionId ?? undefined),
+    });
+    return composerTransform;
+  };
+
+  /**
+   * The four protocol methods stay reachable in every host. Without the SDK
+   * adapter they answer `not_implemented` honestly instead of disappearing from
+   * the allowlist.
+   */
+  const composerTransformHandlers = (): Partial<Record<HostMethod, HostHandler>> => {
+    const host = ensureComposerTransform();
+    if (host) return host.handlers();
+    const unavailable = (): never => {
+      throw new SessionCoreError(
+        "composer transform is not available in this host",
+        "not_implemented",
+      );
+    };
+    return {
+      "composer.transform": unavailable,
+      "composer.status": unavailable,
+      "composer.current": unavailable,
+      "composer.cancel": unavailable,
+      "composer.applied": unavailable,
+    };
+  };
+
+  /**
+   * Rebind the contribution bridge for the session that is now live. A previous
+   * generation is reset first, so a reload can never leave an actionable stale
+   * button; `announce()` is what makes extensions publish at all.
+   */
+  const bindContributions = (): void => {
+    try {
+      contributionBridge?.dispose();
+    } catch {
+      /* teardown is best-effort */
+    }
+    contributionBridge = null;
+    try {
+      contributionHost.reset();
+    } catch {
+      /* a gone renderer must not break a bind */
+    }
+    // A rebind invalidates every composer operation/grant/listener from the
+    // previous session generation before the new one is announced. The host
+    // keeps its bounded settled receipts so a lost apply acknowledgement can
+    // still replay, but no old job or grant can deliver a cached result.
+    try {
+      ensureComposerTransform()?.invalidate("the session binding changed");
+    } catch {
+      /* best-effort teardown */
+    }
+    try {
+      ensureComposerTransform()?.reset();
+    } catch {
+      /* best-effort teardown */
+    }
+    if (!deps.createContributionBridge) return;
+    try {
+      contributionBridge = deps.createContributionBridge(contributionHost);
+      contributionBridge?.announce();
+      ensureComposerTransform()?.announce();
+    } catch (error) {
+      recordRuntimeError(error);
+      contributionBridge = null;
+    }
+  };
 
   /**
    * Bounded `extension_error` history for the Extensions hub (plan step 13). Pi
@@ -537,6 +1105,36 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
   } | null = null;
   let lastOpen: HostOpenTimings | null = null;
   const clock = (): number => deps.now?.() ?? Date.now();
+  let attachmentContextRevision = 0;
+  const attachmentDispatch = createAttachmentDispatchCoordinator();
+  const transferContextRevisions = new Map<string, number>();
+  const currentAttachmentBranch = (): string | null | undefined => {
+    try {
+      const leaf = manager?.getLeafId?.();
+      return typeof leaf === "string" && leaf.length > 0 ? leaf : null;
+    } catch {
+      return undefined;
+    }
+  };
+  const currentAttachmentRevision = (): string => `${sessionEpoch}:${attachmentContextRevision}`;
+  const transferReaders = new Map<string, AttachmentTransferReader>();
+  const plansByTransfer = new Map<string, AttachmentDeliveryPlan>();
+  const attachmentPlanner = createAttachmentPlanner({
+    newId: deps.newAttachmentId ?? randomUUID,
+    now: clock,
+    sha256: (value) => createHash("sha256").update(value).digest("hex"),
+  });
+  const attachmentTransfer =
+    deps.createAttachmentTransferStore?.(
+      (scope) =>
+        session !== null &&
+        session.sessionId === scope.sessionId &&
+        sessionEpoch === scope.sessionEpoch &&
+        currentAttachmentBranch() === scope.branchId &&
+        currentAttachmentRevision() === scope.revision &&
+        transferContextRevisions.get(scope.leaseId) === attachmentContextRevision,
+    ) ?? null;
+  const imagePreparation = deps.createAttachmentImagePreparation?.() ?? null;
   const beginOpen = (): void => {
     activeOpen = {
       startedAt: clock(),
@@ -781,13 +1379,126 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
     return origin === null ? event : { ...event, promptOrigin: origin };
   };
 
+  /**
+   * The capability gate: attribution needs *both* SDK queue getters. Without
+   * them the host never annotates and never filters — a legacy host keeps the
+   * renderer's `"user"` default and the SDK's cleared list unchanged.
+   */
+  const hasQueueGetters = (current: SessionStateLike): boolean =>
+    typeof current.getSteeringMessages === "function" &&
+    typeof current.getFollowUpMessages === "function";
+
+  /** Reads both SDK queues, keeping only string entries; `null` closes the gate. */
+  const readQueue = (
+    current: SessionStateLike,
+  ): { steering: string[]; followUp: string[] } | null => {
+    if (!hasQueueGetters(current)) return null;
+    try {
+      const steering = current.getSteeringMessages?.() ?? [];
+      const followUp = current.getFollowUpMessages?.() ?? [];
+      return {
+        steering: steering.filter((text): text is string => typeof text === "string"),
+        followUp: followUp.filter((text): text is string => typeof text === "string"),
+      };
+    } catch {
+      return null;
+    }
+  };
+
+  /** Multiset difference: the texts in `after` not already present in `before`. */
+  const addedTexts = (before: readonly string[], after: readonly string[]): string[] => {
+    const remaining = new Map<string, number>();
+    for (const text of before) remaining.set(text, (remaining.get(text) ?? 0) + 1);
+    const added: string[] = [];
+    for (const text of after) {
+      const count = remaining.get(text) ?? 0;
+      if (count > 0) remaining.set(text, count - 1);
+      else added.push(text);
+    }
+    return added;
+  };
+
+  /**
+   * Records the texts a renderer request newly admitted into `kind`'s queue and
+   * re-emits one annotated `queue_update`.
+   *
+   * The SDK emits its own unannotated `queue_update` before this claim exists,
+   * so this single re-emit corrects it. Main preserves frame order, so the
+   * renderer's final state is annotated.
+   */
+  const claimQueueDelta = (
+    current: HostSession,
+    kind: QueueKind,
+    before: { steering: string[]; followUp: string[] } | null,
+  ): void => {
+    if (before === null) return;
+    const now = readQueue(current);
+    if (now === null) return;
+    const added = addedTexts(before[kind], now[kind]);
+    if (added.length === 0) return;
+    queueOrigins.claim(kind, added);
+    deps.emit(
+      "queue_update",
+      {
+        steering: now.steering,
+        followUp: now.followUp,
+        queueOrigins: queueOrigins.classify(now.steering, now.followUp),
+      },
+      current.sessionId ?? undefined,
+    );
+  };
+
+  /**
+   * Annotates an SDK `queue_update` with per-entry origins. The SDK arrays stay
+   * untouched (the snapshot and `isSessionBusyState` need them complete); with
+   * the gate closed the frame stays unannotated, which the renderer reads as
+   * `"user"` — today's behaviour.
+   */
+  const withQueueOrigins = (
+    current: HostSession,
+    event: { type: string; [key: string]: unknown },
+  ): { type: string; [key: string]: unknown } => {
+    if (event.type !== "queue_update" || !hasQueueGetters(current)) return event;
+    const steering = Array.isArray(event.steering) ? (event.steering as readonly string[]) : [];
+    const followUp = Array.isArray(event.followUp) ? (event.followUp as readonly string[]) : [];
+    return { ...event, queueOrigins: queueOrigins.classify(steering, followUp) };
+  };
+
+  const withAttachmentTurn = (event: {
+    type: string;
+    [key: string]: unknown;
+  }): { type: string; [key: string]: unknown } => {
+    const turn = attachmentDispatch.current();
+    if (
+      turn === null ||
+      (event.type !== "message_start" && event.type !== "message_end") ||
+      asRecord(event.message).role !== "user"
+    )
+      return event;
+    // Only the initiating user entry of the fenced turn carries metadata; later
+    // steering/follow-up messages are separate turns and must not inherit it.
+    return {
+      ...event,
+      attachmentTurnId: turn.turnId,
+      attachmentAttemptId: turn.attemptId,
+    };
+  };
+
   const attach = (next: HostSession): void => {
     unsubscribe?.();
     unsubscribeErrors?.();
     unsubscribeModelChanges?.();
     promptOrigins.reset();
+    queueOrigins.reset();
     session = next;
     sessionEpoch += 1;
+    attachmentContextRevision += 1;
+    attachmentDispatch.settle();
+    for (const id of transferContextRevisions.keys()) attachmentTransfer?.cancel(id);
+    for (const reader of transferReaders.values()) reader.close();
+    transferContextRevisions.clear();
+    transferReaders.clear();
+    plansByTransfer.clear();
     // The Extensions hub reads this list; errors from the outgoing runner must
     // not be attributed to the replacement session.
     runtimeErrors.length = 0;
@@ -800,10 +1511,20 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
       unsubscribeModelChanges = null;
     }
     const listener = (event: { type: string; [key: string]: unknown }): void => {
-      const enriched = withPromptOrigin(withEntryRenderability(next, event));
+      if (!attachmentDispatch.blocksConcurrentWork()) attachmentContextRevision += 1;
+      if (event.type === "agent_settled" && attachmentDispatch.blocksConcurrentWork()) {
+        attachmentDispatch.settle();
+        attachmentContextRevision += 1;
+      }
+      const enriched = withQueueOrigins(
+        next,
+        withPromptOrigin(withEntryRenderability(next, withAttachmentTurn(event))),
+      );
       const frame = eventToFrame(enriched);
       deps.emit(frame.event, frame.payload, next.sessionId ?? undefined);
       if (event.type === "agent_settled") promptOrigins.settle();
+      // Queue claims are deliberately not settled here: an aborted/settled run
+      // leaves the SDK queues populated, so queued entries keep their owner.
       if (STATE_EVENTS.has(event.type)) emitState();
     };
     unsubscribe = next.subscribe ? next.subscribe(listener) : null;
@@ -835,6 +1556,8 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
     const bindStartedAt = clock();
     await deps.bindSession?.(runtime.session, runtime);
     if (activeOpen) activeOpen.bindMs = clock() - bindStartedAt;
+    bindContributions();
+    bindRelatedSessions();
     scopeFingerprint = null;
     const reconcileStartedAt = clock();
     await reconcileModelScope({ reload: true });
@@ -854,6 +1577,19 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
    * wait for the first and observe its snapshot, instead of replacing again.
    */
   let sessionTransition: Promise<void> = Promise.resolve();
+  /** A dispatch is awaiting preflight; a second send/staging must not start. */
+  const requireNoPendingAttachmentDispatch = (): void => {
+    if (attachmentDispatch.blocksConcurrentWork()) {
+      throw new SessionCoreError("an attachment turn is being dispatched", "busy");
+    }
+  };
+  /** Model/settings/session/context mutations wait for the attachment turn. */
+  const requireNoAttachmentContextMutation = (): void => {
+    if (attachmentDispatch.blocksContextMutation()) {
+      throw new SessionCoreError("an attachment turn is active; wait for it to settle", "busy");
+    }
+  };
+
   const serializeSessionTransition = <T>(run: () => Promise<T>): Promise<T> => {
     const next = sessionTransition.then(run, run);
     sessionTransition = next.then(
@@ -862,7 +1598,6 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
     );
     return next;
   };
-
   const snapshot = (): SessionSnapshot => {
     if (!session) {
       return {
@@ -901,6 +1636,29 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
     return session;
   };
 
+  const makeAttachmentPlanInput = (
+    current: HostSession,
+    reader: AttachmentTransferReader,
+    text: string,
+  ): AttachmentPlanInput | null => {
+    const revision = transferContextRevisions.get(reader.id);
+    if (revision === undefined) return null;
+    const usage = current.getContextUsage?.();
+    return createAttachmentPlanInput({
+      scope: reader.scope,
+      model: current.model,
+      idle: current.isIdle === true,
+      messages: Array.isArray(current.messages) ? current.messages : null,
+      contextTokens: typeof usage?.tokens === "number" ? usage.tokens : null,
+      contextWindow: typeof usage?.contextWindow === "number" ? usage.contextWindow : null,
+      assets: reader.assets,
+      text,
+      // Prompt templates are disabled for this adapter; slash invocations are
+      // conservatively blocked rather than guessed from renderer command state.
+      registeredCommand: text.trimStart().startsWith("/"),
+    });
+  };
+
   const startSession = async (options: {
     cwd: string;
     sessionManager: SessionManagerHandle;
@@ -915,6 +1673,11 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
     model?: string;
     /** Per-project default thinking level for a brand-new session. */
     thinking?: string;
+    /**
+     * Bounded entries written before `session_start` (orchestrator step 12).
+     * They are data only: opening the session must never run a turn.
+     */
+    bootstrap?: SessionBootstrapEntry[];
   }): Promise<SessionSnapshot> => {
     beginOpen();
     const trustStartedAt = clock();
@@ -931,16 +1694,31 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
 
     cwd = options.cwd;
     manager = options.sessionManager;
+    if (options.bootstrap && options.bootstrap.length > 0) {
+      if (typeof options.sessionManager.appendMessage === "function") {
+        for (const entry of options.bootstrap) {
+          options.sessionManager.appendMessage({
+            role: "custom",
+            customType: entry.customType,
+            content: entry.content,
+            display: entry.display === true,
+            timestamp: clock(),
+          });
+        }
+      }
+    }
     const created = await deps.createRuntime({
       cwd,
       agentDir: deps.agentDir,
       sessionManager: options.sessionManager,
       npmCommand: deps.npmCommand,
       projectTrusted: status.trusted,
+      ...(deps.contributionBus ? { eventBus: deps.contributionBus } : {}),
       ...(deps.safeMode ? { safeMode: true } : {}),
       ...(deps.checkpointsExtensionPath
         ? { checkpointsExtensionPath: deps.checkpointsExtensionPath }
         : {}),
+      ...(deps.workflowBuiltin ? { workflowBuiltin: deps.workflowBuiltin } : {}),
       onPhase: recordOpenPhase,
     });
     runtime = created.runtime;
@@ -956,6 +1734,8 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
     const bindStartedAt = clock();
     await deps.bindSession?.(created.session, created.runtime);
     if (activeOpen) activeOpen.bindMs = clock() - bindStartedAt;
+    bindContributions();
+    bindRelatedSessions();
     scopeFingerprint = null;
     const reconcileStartedAt = clock();
     // The runtime factory has just built `SettingsManager` from disk and
@@ -993,6 +1773,11 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
         typeof input.thinking === "string" && input.thinking.length > 0
           ? input.thinking
           : undefined;
+      const bootstrap =
+        input.bootstrap === undefined ? undefined : validateBootstrapEntries(input.bootstrap);
+      if (bootstrap && !bootstrap.ok) {
+        throw new SessionCoreError(bootstrap.error, "bad_request");
+      }
       const sessionManager = deps.newSessionManager
         ? deps.newSessionManager(targetCwd, deps.sessionDir)
         : {};
@@ -1003,6 +1788,7 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
         ...(trustAnswer ? { trustAnswer } : {}),
         ...(model ? { model } : {}),
         ...(thinking ? { thinking } : {}),
+        ...(bootstrap?.ok && bootstrap.value.length > 0 ? { bootstrap: bootstrap.value } : {}),
       });
     },
 
@@ -1073,10 +1859,574 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
       return { name, sessionFile: manager.getSessionFile?.() ?? session?.sessionFile ?? null };
     },
 
-    prompt: async (params) => {
+    // Parent-only private transport; the renderer-facing session.request route
+    // rejects these methods before they reach a host.
+    "attachments.context": () => {
+      const current = ensure();
+      const branchId = currentAttachmentBranch();
+      if (current.isIdle !== true || attachmentDispatch.blocksConcurrentWork()) {
+        throw new SessionCoreError("attachment context is busy", "busy");
+      }
+      if (branchId === undefined) {
+        throw new SessionCoreError("attachment context is unavailable", "unavailable");
+      }
+      return {
+        sessionId: current.sessionId,
+        sessionEpoch,
+        branchId,
+        revision: currentAttachmentRevision(),
+      };
+    },
+    "attachments.transfer.begin": (params) => {
       const current = ensure();
       const input = asRecord(params);
-      const text = requireString(input.text, "text");
+      if (
+        !attachmentTransfer ||
+        Object.keys(input).length !== 4 ||
+        !Object.keys(input).every((key) => ["id", "scope", "expiresAt", "assets"].includes(key)) ||
+        !input.scope ||
+        typeof input.scope !== "object"
+      ) {
+        throw new SessionCoreError("invalid private attachment transfer", "bad_request");
+      }
+      const scope = input.scope as AttachmentDeliveryScope;
+      const branchId = currentAttachmentBranch();
+      if (
+        current.isIdle !== true ||
+        attachmentDispatch.blocksConcurrentWork() ||
+        scope.sessionId !== current.sessionId ||
+        scope.sessionEpoch !== sessionEpoch ||
+        branchId === undefined ||
+        scope.branchId !== branchId ||
+        scope.revision !== currentAttachmentRevision()
+      ) {
+        throw new SessionCoreError("attachment transfer is stale", "stale_plan");
+      }
+      const transferId = input.id;
+      if (
+        typeof transferId !== "string" ||
+        !isAttachmentId(transferId) ||
+        scope.leaseId !== transferId
+      ) {
+        throw new SessionCoreError("invalid private attachment transfer", "bad_request");
+      }
+      for (const [id, reader] of transferReaders) {
+        if (reader.isCurrent()) continue;
+        reader.close();
+        transferReaders.delete(id);
+        plansByTransfer.delete(id);
+        transferContextRevisions.delete(id);
+      }
+      transferContextRevisions.set(transferId, attachmentContextRevision);
+      try {
+        attachmentTransfer.begin({
+          id: transferId,
+          scope,
+          expiresAt: input.expiresAt as number,
+          assets: input.assets as AuthorizedAttachmentAsset[],
+        });
+      } catch {
+        transferContextRevisions.delete(transferId);
+        throw new SessionCoreError("attachment transfer is unavailable", "unavailable");
+      }
+      return { staged: true };
+    },
+    "attachments.transfer.chunk": (params) => {
+      const current = ensure();
+      if (current.isIdle !== true || attachmentDispatch.blocksConcurrentWork()) {
+        throw new SessionCoreError("attachment transfer is unavailable", "unavailable");
+      }
+      const input = asRecord(params);
+      if (
+        !attachmentTransfer ||
+        Object.keys(input).length !== 4 ||
+        !Object.keys(input).every((key) =>
+          ["id", "representationId", "offset", "encoded"].includes(key),
+        )
+      ) {
+        throw new SessionCoreError("invalid private attachment chunk", "bad_request");
+      }
+      try {
+        attachmentTransfer.chunk(
+          input.id as string,
+          input.representationId as string,
+          input.offset as number,
+          input.encoded as string,
+        );
+      } catch {
+        throw new SessionCoreError("attachment transfer is unavailable", "unavailable");
+      }
+      return { accepted: true };
+    },
+    "attachments.transfer.seal": (params) => {
+      const current = ensure();
+      if (current.isIdle !== true || attachmentDispatch.blocksConcurrentWork()) {
+        throw new SessionCoreError("attachment transfer is unavailable", "unavailable");
+      }
+      const input = asRecord(params);
+      if (!attachmentTransfer || Object.keys(input).length !== 1 || typeof input.id !== "string") {
+        throw new SessionCoreError("invalid private attachment transfer", "bad_request");
+      }
+      try {
+        const reader = attachmentTransfer.seal(input.id);
+        transferReaders.set(input.id, reader);
+      } catch {
+        throw new SessionCoreError("attachment transfer is unavailable", "unavailable");
+      }
+      return { sealed: true };
+    },
+    "attachments.transfer.cancel": (params) => {
+      const input = asRecord(params);
+      if (!attachmentTransfer || Object.keys(input).length !== 1 || typeof input.id !== "string") {
+        throw new SessionCoreError("invalid private attachment transfer", "bad_request");
+      }
+      attachmentTransfer.cancel(input.id);
+      transferReaders.get(input.id)?.close();
+      transferReaders.delete(input.id);
+      transferContextRevisions.delete(input.id);
+      plansByTransfer.delete(input.id);
+      return { cancelled: true };
+    },
+    "attachments.image.begin": (params) => {
+      const current = ensure();
+      const input = asRecord(params);
+      if (current.isIdle !== true) {
+        throw new SessionCoreError("image preparation is busy", "busy");
+      }
+      if (
+        !imagePreparation ||
+        Object.keys(input).length !== 6 ||
+        !Object.keys(input).every((key) =>
+          ["id", "originalId", "originalSha256", "bytes", "mime", "expiresAt"].includes(key),
+        )
+      ) {
+        throw new SessionCoreError("invalid private image preparation", "bad_request");
+      }
+      try {
+        imagePreparation.begin({
+          id: input.id as string,
+          originalId: input.originalId as string,
+          originalSha256: input.originalSha256 as string,
+          bytes: input.bytes as number,
+          mime: input.mime as string,
+          expiresAt: input.expiresAt as number,
+        });
+      } catch {
+        throw new SessionCoreError("image preparation is unavailable", "unavailable");
+      }
+      return { staged: true };
+    },
+    "attachments.image.chunk": (params) => {
+      const current = ensure();
+      const input = asRecord(params);
+      if (current.isIdle !== true) {
+        throw new SessionCoreError("image preparation is busy", "busy");
+      }
+      if (
+        !imagePreparation ||
+        Object.keys(input).length !== 3 ||
+        !Object.keys(input).every((key) => ["id", "offset", "encoded"].includes(key))
+      ) {
+        throw new SessionCoreError("invalid private image preparation chunk", "bad_request");
+      }
+      try {
+        imagePreparation.chunk(input.id as string, input.offset as number, input.encoded as string);
+      } catch {
+        throw new SessionCoreError("image preparation is unavailable", "unavailable");
+      }
+      return { accepted: true };
+    },
+    "attachments.image.prepare": async (params) => {
+      const current = ensure();
+      const input = asRecord(params);
+      if (current.isIdle !== true) {
+        throw new SessionCoreError("image preparation is busy", "busy");
+      }
+      const limits = asRecord(input.limits);
+      if (
+        !imagePreparation ||
+        Object.keys(input).length !== 2 ||
+        !Object.keys(input).every((key) => ["id", "limits"].includes(key)) ||
+        Object.keys(limits).length !== 3 ||
+        !Object.keys(limits).every((key) =>
+          ["maxWidth", "maxHeight", "maxEncodedBytes"].includes(key),
+        )
+      ) {
+        throw new SessionCoreError("invalid private image preparation", "bad_request");
+      }
+      try {
+        return await imagePreparation.prepare(input.id as string, {
+          maxWidth: limits.maxWidth as number,
+          maxHeight: limits.maxHeight as number,
+          maxEncodedBytes: limits.maxEncodedBytes as number,
+        });
+      } catch {
+        throw new SessionCoreError("image preparation is unavailable", "unavailable");
+      }
+    },
+    "attachments.image.read": (params) => {
+      const current = ensure();
+      const input = asRecord(params);
+      const part = input.part;
+      if (current.isIdle !== true) {
+        throw new SessionCoreError("image preparation is busy", "busy");
+      }
+      if (
+        !imagePreparation ||
+        Object.keys(input).length !== 4 ||
+        !Object.keys(input).every((key) => ["id", "part", "offset", "length"].includes(key)) ||
+        (part !== "prepared" && part !== "thumbnail")
+      ) {
+        throw new SessionCoreError("invalid private image preparation read", "bad_request");
+      }
+      try {
+        return {
+          encoded: imagePreparation.readChunk(
+            input.id as string,
+            part as PreparationPart,
+            input.offset as number,
+            input.length as number,
+          ),
+        };
+      } catch {
+        throw new SessionCoreError("image preparation is unavailable", "unavailable");
+      }
+    },
+    "attachments.image.cancel": (params) => {
+      const input = asRecord(params);
+      if (!imagePreparation || Object.keys(input).length !== 1 || typeof input.id !== "string") {
+        throw new SessionCoreError("invalid private image preparation", "bad_request");
+      }
+      imagePreparation.cancel(input.id);
+      return { cancelled: true };
+    },
+    "attachments.readiness": (params) => {
+      const current = ensure();
+      const input = asRecord(params);
+      const files = input.files;
+      if (
+        Object.keys(input).length !== 3 ||
+        !Object.keys(input).every((key) => ["profileKey", "text", "files"].includes(key)) ||
+        typeof input.profileKey !== "string" ||
+        !/^[0-9a-f]{64}$/.test(input.profileKey) ||
+        typeof input.text !== "string" ||
+        !isWellFormedAttachmentText(input.text) ||
+        !Array.isArray(files) ||
+        files.length === 0 ||
+        files.length > ATTACHMENT_LIMITS.filesPerDraft
+      ) {
+        throw new SessionCoreError("invalid attachment readiness request", "bad_request");
+      }
+      const branchId = currentAttachmentBranch();
+      if (branchId === undefined) {
+        throw new SessionCoreError("attachment readiness is unavailable", "unavailable");
+      }
+      const assets: AttachmentPolicyAsset[] = [];
+      const seen = new Set<string>();
+      for (const value of files) {
+        const file = asRecord(value);
+        const image = file.image === null ? null : asRecord(file.image);
+        if (
+          Object.keys(file).length !== 6 ||
+          !Object.keys(file).every((key) =>
+            [
+              "id",
+              "originalKind",
+              "originalBytes",
+              "modality",
+              "representationBytes",
+              "image",
+            ].includes(key),
+          ) ||
+          !isAttachmentId(file.id) ||
+          seen.has(file.id as string) ||
+          !ATTACHMENT_ORIGINAL_KINDS.includes(
+            file.originalKind as (typeof ATTACHMENT_ORIGINAL_KINDS)[number],
+          ) ||
+          (file.modality !== "text" && file.modality !== "image") ||
+          !Number.isSafeInteger(file.originalBytes) ||
+          Number(file.originalBytes) < 0 ||
+          Number(file.originalBytes) > ATTACHMENT_LIMITS.documentOriginalBytes ||
+          !Number.isSafeInteger(file.representationBytes) ||
+          Number(file.representationBytes) < 0 ||
+          Number(file.representationBytes) > ATTACHMENT_LIMITS.imageOriginalBytes ||
+          (image !== null &&
+            (Object.keys(image).length !== 2 ||
+              !Object.keys(image).every((key) => ["width", "height"].includes(key)) ||
+              !Number.isSafeInteger(image.width) ||
+              Number(image.width) <= 0 ||
+              Number(image.width) > 32_768 ||
+              !Number.isSafeInteger(image.height) ||
+              Number(image.height) <= 0 ||
+              Number(image.height) > 32_768 ||
+              Number(image.width) * Number(image.height) > ATTACHMENT_LIMITS.imagePixels))
+        ) {
+          throw new SessionCoreError("invalid attachment readiness request", "bad_request");
+        }
+        seen.add(file.id as string);
+        assets.push({
+          originalId: file.id as string,
+          representationId: file.id as string,
+          originalKind: file.originalKind as AttachmentPolicyAsset["originalKind"],
+          originalBytes: Number(file.originalBytes),
+          modality: file.modality as AttachmentPolicyAsset["modality"],
+          representationBytes: Number(file.representationBytes),
+          origin: "direct",
+          approved: true,
+          image: image ? { width: Number(image.width), height: Number(image.height) } : null,
+        });
+      }
+      const usage = current.getContextUsage?.();
+      const sessionId = current.sessionId;
+      if (typeof sessionId !== "string" || sessionId.length === 0) {
+        throw new SessionCoreError("attachment readiness is unavailable", "unavailable");
+      }
+      const text = input.text as string;
+      const scope = {
+        profileKey: input.profileKey as string,
+        sessionId,
+        sessionEpoch,
+        branchId,
+        revision: currentAttachmentRevision(),
+      };
+      const policy = createAttachmentReadinessPolicyContext({
+        scope,
+        model: current.model,
+        idle: current.isIdle === true,
+        messages: Array.isArray(current.messages) ? current.messages : null,
+        contextTokens: typeof usage?.tokens === "number" ? usage.tokens : null,
+        contextWindow: typeof usage?.contextWindow === "number" ? usage.contextWindow : null,
+        images: assets.map((asset) => ({ modality: asset.modality, image: asset.image })),
+        registeredCommand: text.trimStart().startsWith("/"),
+      });
+      const verdict = evaluateAttachmentPolicy(policy, assets, text);
+      // Per-file verdicts describe the file/model/budget only; busy or command
+      // state stays an aggregate reason so it is not repeated on every file.
+      const fileContext = { ...policy, idle: true, registeredCommand: false };
+      return {
+        revision: scope.revision,
+        model: verdict.model,
+        files: assets.map((asset) => ({
+          id: asset.originalId,
+          reasons: evaluateAttachmentPolicy(fileContext, [asset], text).reasons,
+        })),
+        reasons: verdict.reasons,
+        estimatedTokens: verdict.estimatedTokens,
+      };
+    },
+    "attachments.plan": async (params) => {
+      const current = ensure();
+      const input = asRecord(params);
+      if (
+        Object.keys(input).length !== 2 ||
+        !Object.keys(input).every((key) => ["id", "text"].includes(key)) ||
+        typeof input.id !== "string" ||
+        !isAttachmentId(input.id) ||
+        typeof input.text !== "string" ||
+        !isWellFormedAttachmentText(input.text)
+      ) {
+        throw new SessionCoreError("invalid attachment plan request", "bad_request");
+      }
+      if (attachmentDispatch.blocksConcurrentWork())
+        return { outcome: "blocked", reasons: ["busy"] };
+      const reader = transferReaders.get(input.id);
+      if (!reader || !reader.isCurrent()) return { outcome: "blocked", reasons: ["unavailable"] };
+      const planInput = makeAttachmentPlanInput(current, reader, input.text);
+      if (!planInput) return { outcome: "blocked", reasons: ["unavailable"] };
+      const result = attachmentPlanner.plan(planInput);
+      if (result.outcome === "ready") plansByTransfer.set(input.id, result.plan);
+      else plansByTransfer.delete(input.id);
+      return result;
+    },
+    "attachments.submissions.list": (params) => {
+      const current = ensure();
+      const input = asRecord(params);
+      if (Object.keys(input).length !== 0) {
+        throw new SessionCoreError("invalid attachment submission query", "bad_request");
+      }
+      return {
+        version: 1,
+        associations: deps.listAttachmentSubmissions?.(current) ?? [],
+      };
+    },
+    "attachments.prompt": async (params) => {
+      const current = ensure();
+      const input = asRecord(params);
+      const transferId = input.transferId;
+      if (
+        Object.keys(input).length !== 6 ||
+        !Object.keys(input).every((key) =>
+          ["version", "transferId", "planId", "turnId", "attemptId", "text"].includes(key),
+        ) ||
+        typeof transferId !== "string" ||
+        !isAttachmentId(transferId)
+      ) {
+        throw new SessionCoreError("invalid attachment prompt request", "bad_request");
+      }
+      const request = validateAttachmentPromptRequest({
+        version: input.version,
+        planId: input.planId,
+        turnId: input.turnId,
+        attemptId: input.attemptId,
+        text: input.text,
+      });
+      if (!request.ok)
+        throw new SessionCoreError("invalid attachment prompt request", request.reason);
+      const { planId, turnId, attemptId, text } = request.value;
+      if (attachmentDispatch.blocksConcurrentWork() || current.isIdle !== true) {
+        return {
+          outcome: "blocked",
+          reasons: ["busy"],
+          turnId,
+          attemptId,
+        } satisfies AttachmentPromptResult;
+      }
+      const reader = transferReaders.get(transferId);
+      const plan = plansByTransfer.get(transferId);
+      if (!reader || !plan || plan.id !== planId || !reader.isCurrent()) {
+        return {
+          outcome: "blocked",
+          reasons: ["stale_plan"],
+          turnId,
+          attemptId,
+        } satisfies AttachmentPromptResult;
+      }
+      const initial = makeAttachmentPlanInput(current, reader, text);
+      if (!initial || !attachmentPlanner.isCurrent(planId, initial)) {
+        plansByTransfer.delete(transferId);
+        return {
+          outcome: "blocked",
+          reasons: ["stale_plan"],
+          turnId,
+          attemptId,
+        } satisfies AttachmentPromptResult;
+      }
+      const materializationPort = {
+        isCurrent: async (
+          activePlanId: string,
+          assets: readonly AuthorizedAttachmentAsset[],
+          userText: string,
+        ): Promise<boolean> => {
+          const latest = makeAttachmentPlanInput(current, reader, userText);
+          return (
+            !!latest &&
+            current.isIdle === true &&
+            reader.isCurrent() &&
+            attachmentPlanner.isCurrent(activePlanId, { ...latest, assets })
+          );
+        },
+        readChunk: (representationId: string, offset: number, length: number) =>
+          reader.readChunk(representationId, offset, length),
+        sha256: async (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex"),
+      };
+      let materialized: MaterializedAttachmentPrompt;
+      try {
+        materialized = await materializeAttachmentPrompt(
+          materializationPort,
+          plan,
+          reader.assets,
+          text,
+        );
+      } catch {
+        plansByTransfer.delete(transferId);
+        return {
+          outcome: "blocked",
+          reasons: ["unavailable"],
+          turnId,
+          attemptId,
+        } satisfies AttachmentPromptResult;
+      }
+      if (!deps.dispatchAttachmentPrompt) {
+        plansByTransfer.delete(transferId);
+        return {
+          outcome: "blocked",
+          reasons: ["sdk_pipeline_unsafe"],
+          turnId,
+          attemptId,
+        } satisfies AttachmentPromptResult;
+      }
+      let consumed = false;
+      const revalidate = async (): Promise<boolean> => {
+        if (
+          consumed ||
+          attachmentDispatch.blocksConcurrentWork() ||
+          current.isIdle !== true ||
+          !reader.isCurrent()
+        )
+          return false;
+        const latest = makeAttachmentPlanInput(current, reader, text);
+        if (!latest || !attachmentPlanner.consume(planId, latest)) return false;
+        consumed = true;
+        plansByTransfer.delete(transferId);
+        // The coordinator fences ordinary prompts, model/settings mutations and
+        // context transitions until this attempt is accepted and settled.
+        if (!attachmentDispatch.beginDispatch({ turnId, attemptId })) return false;
+        return true;
+      };
+      try {
+        const result = await deps.dispatchAttachmentPrompt({
+          session: current,
+          turnId,
+          attemptId,
+          planId,
+          sourceTextSha256: createHash("sha256").update(text).digest("hex"),
+          scope: reader.scope,
+          assets: reader.assets,
+          expectedModel: plan.model,
+          text: materialized.text,
+          images: materialized.images,
+          revalidate,
+          isCurrent: () =>
+            attachmentDispatch.current()?.turnId === turnId &&
+            reader.isCurrent() &&
+            transferContextRevisions.get(reader.id) === attachmentContextRevision,
+          onLateFailure: () =>
+            deps.emit(
+              "session_error",
+              {
+                message:
+                  "Attachment delivery became uncertain. Stop or restart this session before retrying.",
+              },
+              current.sessionId,
+            ),
+        });
+        if (result.outcome === "handled" || result.outcome === "blocked") {
+          if (attachmentDispatch.current()?.turnId === turnId) {
+            attachmentDispatch.release({ turnId, attemptId });
+            attachmentContextRevision += 1;
+          }
+        } else if (result.outcome === "accepted" && attachmentDispatch.phase() === "dispatching") {
+          attachmentDispatch.accept({ turnId, attemptId });
+        }
+        if (result.turnId !== turnId || result.attemptId !== attemptId) {
+          return { outcome: "uncertain", turnId, attemptId };
+        }
+        return result;
+      } catch {
+        return { outcome: "uncertain", turnId, attemptId };
+      }
+    },
+
+    prompt: async (params) => {
+      const current = ensure();
+      requireNoPendingAttachmentDispatch();
+      const input = asRecord(params);
+      rejectAttachmentFields(input, true);
+      const rawText = typeof input.text === "string" ? input.text : "";
+      let legacyImages: Awaited<ReturnType<typeof validateLegacyImages>> | null = null;
+      if (Object.prototype.hasOwnProperty.call(input, "images")) {
+        try {
+          legacyImages = await validateLegacyImages(input.images, rawText);
+        } catch {
+          throw new SessionCoreError("images must be bounded valid raster blocks", "bad_request");
+        }
+      }
+      const text =
+        rawText.trim().length > 0
+          ? rawText
+          : legacyImages && legacyImages.length > 0
+            ? "Please consider the attached images."
+            : requireString(input.text, "text");
       const behavior = input.streamingBehavior;
       if (behavior !== undefined && behavior !== "steer" && behavior !== "followUp") {
         throw new SessionCoreError(
@@ -1111,6 +2461,28 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
       if (input.ack !== undefined && input.ack !== "preflight") {
         throw new SessionCoreError('ack must be "preflight" when provided', "bad_request");
       }
+      // Ordinary Desktop prompts are subject to the same image-context rule as
+      // managed sends: never strip history, refuse a route whose images the
+      // active model cannot accept (plan step 9).
+      const promptRouteReasons = evaluatePromptRoute({
+        model: current.model,
+        historyImageCount: estimateAttachmentHistory(
+          Array.isArray(current.messages) ? current.messages : null,
+        ).imageCount,
+        addingImages: (legacyImages?.length ?? 0) > 0,
+      });
+      if (promptRouteReasons.length > 0) {
+        throw new SessionCoreError(promptRouteReasons.join(", "), promptRouteReasons[0]!);
+      }
+      // Attribution window: only a streaming prompt with an explicit behavior
+      // queues, so only that combination needs a pre-call snapshot.
+      const queueKind: QueueKind | null =
+        current.isStreaming === true && behavior !== undefined
+          ? behavior === "steer"
+            ? "steering"
+            : "followUp"
+          : null;
+      const queueBefore = queueKind === null ? null : readQueue(current);
       // A new prompt while idle supersedes any dispatch that never produced a
       // user message (a notify-only command); queued follow-ups are streaming
       // and are therefore never dropped here.
@@ -1132,6 +2504,11 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
           const finish = (disposition: string): void => {
             if (settled) return;
             settled = true;
+            // Nothing is claimed before the call, so a `started`/`handled`
+            // disposition cannot leave a stale entry behind.
+            if (disposition === "queued" && queueKind !== null) {
+              claimQueueDelta(current, queueKind, queueBefore);
+            }
             resolve({ ...snapshot(), disposition });
           };
           options.preflightResult = (disposition: string) => finish(disposition);
@@ -1167,6 +2544,7 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
       }
       try {
         await current.prompt(text, Object.keys(options).length > 0 ? options : undefined);
+        if (queueKind !== null) claimQueueDelta(current, queueKind, queueBefore);
         return snapshot();
       } catch (error) {
         promptOrigins.forget(pending);
@@ -1176,18 +2554,48 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
 
     steer: async (params) => {
       const current = ensure();
-      const text = requireString(asRecord(params).text, "text");
+      requireNoPendingAttachmentDispatch();
+      const input = asRecord(params);
+      rejectAttachmentFields(input);
+      const text = requireString(input.text, "text");
+      const routeReasons = evaluatePromptRoute({
+        model: current.model,
+        historyImageCount: estimateAttachmentHistory(
+          Array.isArray(current.messages) ? current.messages : null,
+        ).imageCount,
+        addingImages: false,
+      });
+      if (routeReasons.length > 0) {
+        throw new SessionCoreError(routeReasons.join(", "), routeReasons[0]!);
+      }
       if (!current.steer) throw new SessionCoreError("steering is not supported", "unsupported");
+      const before = readQueue(current);
       await current.steer(text, undefined, { source: "rpc" });
+      claimQueueDelta(current, "steering", before);
       return { queued: true };
     },
 
     followUp: async (params) => {
       const current = ensure();
-      const text = requireString(asRecord(params).text, "text");
+      requireNoPendingAttachmentDispatch();
+      const input = asRecord(params);
+      rejectAttachmentFields(input);
+      const text = requireString(input.text, "text");
+      const routeReasons = evaluatePromptRoute({
+        model: current.model,
+        historyImageCount: estimateAttachmentHistory(
+          Array.isArray(current.messages) ? current.messages : null,
+        ).imageCount,
+        addingImages: false,
+      });
+      if (routeReasons.length > 0) {
+        throw new SessionCoreError(routeReasons.join(", "), routeReasons[0]!);
+      }
       if (!current.followUp)
         throw new SessionCoreError("follow-up is not supported", "unsupported");
+      const before = readQueue(current);
       await current.followUp(text, undefined, { source: "rpc" });
+      claimQueueDelta(current, "followUp", before);
       return { queued: true };
     },
 
@@ -1198,9 +2606,41 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
     },
 
     clearQueue: () => {
-      const cleared = ensure().clearQueue?.() ?? null;
+      const current = ensure();
+      // The SDK empties both arrays and emits its own empty `queue_update`
+      // before returning, and the tracker prunes on absence — so classify the
+      // pre-clear snapshot, then reset after clearing.
+      const before = readQueue(current);
+      const origins =
+        before === null ? null : queueOrigins.classify(before.steering, before.followUp);
+      const cleared = current.clearQueue?.() ?? null;
+      queueOrigins.reset();
       emitState();
-      return { cleared };
+      if (cleared === null) return { cleared: null, dropped: 0 };
+      // Gate closed: never filter what cannot be attributed. The SDK's cleared
+      // list passes through unchanged; an absent `dropped` reads as 0.
+      if (origins === null) return { cleared };
+      // The SDK call still clears everything (there is no selective API), so
+      // this return is a report, not a filter. The dropped extension turn is
+      // why the renderer shows a hint (plan step 7).
+      const steering: string[] = [];
+      const followUp: string[] = [];
+      let dropped = 0;
+      const keepUserTexts = (
+        texts: readonly string[] | undefined,
+        originList: readonly string[] | undefined,
+        into: string[],
+      ): void => {
+        if (texts === undefined) return;
+        texts.forEach((text, index) => {
+          // An entry beyond the snapshot (a length mismatch) reads as user.
+          if (originList?.[index] === "extension") dropped += 1;
+          else into.push(text);
+        });
+      };
+      keepUserTexts(cleared.steering, origins.steering, steering);
+      keepUserTexts(cleared.followUp, origins.followUp, followUp);
+      return { cleared: { steering, followUp }, dropped };
     },
 
     "state.get": () => snapshot(),
@@ -1209,8 +2649,45 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
       const input = asRecord(params);
       const limit =
         typeof input.limit === "number" && input.limit > 0 ? Math.floor(input.limit) : undefined;
-      const messages = ensure().messages ?? [];
-      return { messages: limit ? messages.slice(-limit) : messages, total: messages.length };
+      const current = ensure();
+      const persisted = deps.listAttachmentSubmissionHistory?.(current) ?? [];
+      if (input.attachmentTurnId !== undefined) {
+        if (Object.keys(input).length !== 1 || !isAttachmentId(input.attachmentTurnId)) {
+          throw new SessionCoreError("invalid attachment transcript lookup", "bad_request");
+        }
+        const found = persisted.find(
+          (item) => item.association.metadata.turnId === input.attachmentTurnId,
+        );
+        return { attachmentCard: found ? attachmentTranscriptCard(found.association) : null };
+      }
+      const messages = current.messages ?? [];
+      const byMessage = new Map<unknown, AttachmentSubmissionTranscriptRecord[]>();
+      for (const item of persisted) {
+        const matches = byMessage.get(item.message) ?? [];
+        matches.push(item);
+        byMessage.set(item.message, matches);
+      }
+      // A repeated object in history is an ambiguous turn: Pi can hold two
+      // entries that are value-identical, and `messages.get` must not attach one
+      // card to both of them.
+      const occurrences = new Map<unknown, number>();
+      for (const message of messages) {
+        occurrences.set(message, (occurrences.get(message) ?? 0) + 1);
+      }
+      const projected = messages.map((message) => {
+        const matches = byMessage.get(message);
+        // Associate only by the exact persisted message object, never by its
+        // filename or text. Ambiguous duplicate references degrade normally.
+        if (!matches || matches.length !== 1 || occurrences.get(message) !== 1) return message;
+        const { association } = matches[0]!;
+        const card: AttachmentTranscriptCard = attachmentTranscriptCard(association);
+        return {
+          ...asRecord(message),
+          id: association.metadata.userEntryId,
+          desktopAttachmentCard: card,
+        };
+      });
+      return { messages: limit ? projected.slice(-limit) : projected, total: messages.length };
     },
 
     "stats.get": () => {
@@ -1255,6 +2732,20 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
 
     "commands.list": () => ({ commands: collectCommands(ensure()) }),
 
+    // Generic extension contributions (orchestrator plan step 8): a renderer
+    // reads one snapshot and runs an action by (owner, contribution id).
+    ...contributionHost.handlers(),
+    // Source-bound composer operations (prompt-refinement row 14). The handlers
+    // are the frozen allowlist above; every one re-checks the live binding.
+    ...composerTransformHandlers(),
+    // Main settles a host-forwarded related-session operation here. The bridge
+    // is per bind; before the first bind there is nothing to settle.
+    "sessionHost.result": (params) =>
+      relatedBridge?.settle(params) ?? {
+        accepted: false,
+        reason: "no related-session bridge is bound",
+      },
+
     // The Extensions hub (plan step 13): what this session actually loaded, with
     // provenance, contributions and errors. A session host answers from its live
     // resource loader + extension runner, so the data is the running truth.
@@ -1270,6 +2761,7 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
           themes: session?.resourceLoader?.getThemes?.(),
         },
         runtimeErrors,
+        ...(deps.workflowBuiltin ? { builtin: deps.workflowBuiltin } : {}),
         now: deps.now,
       }),
 
@@ -1598,6 +3090,15 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
     "model.cycle": async (params) => {
       const input = asRecord(params);
       const current = ensure();
+      requireNoAttachmentContextMutation();
+      if (current.isStreaming === true) {
+        const historyImages = estimateAttachmentHistory(
+          Array.isArray(current.messages) ? current.messages : null,
+        ).imageCount;
+        if ((historyImages ?? 0) > 0) {
+          throw new SessionCoreError("cannot cycle models during an active image context", "busy");
+        }
+      }
       if (!current.cycleModel) {
         throw new SessionCoreError("cycling models is not supported", "unsupported");
       }
@@ -1818,6 +3319,7 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
     // the CAS (or the pre-write re-read) retry once instead of losing a model.
     "model.scope.toggle": async (params) => {
       const current = ensure();
+      requireNoAttachmentContextMutation();
       const scope = requireModelScope(current);
       const input = asRecord(params);
       const provider = requireString(input.provider, "provider").trim();
@@ -1895,11 +3397,25 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
 
     "model.set": async (params) => {
       const current = ensure();
+      requireNoAttachmentContextMutation();
       const input = asRecord(params);
       if (!input.model)
         throw new SessionCoreError("model.set requires a model object", "bad_request");
       if (!current.setModel)
         throw new SessionCoreError("model changes are not supported", "unsupported");
+      // An active image run cannot be re-pointed at a model that would drop its
+      // images. When idle the switch is allowed; the prompt-route policy blocks
+      // dispatch until the context/model pair is compatible again.
+      const modelChangeReasons = evaluateModelChange({
+        model: input.model,
+        historyImageCount: estimateAttachmentHistory(
+          Array.isArray(current.messages) ? current.messages : null,
+        ).imageCount,
+        streaming: current.isStreaming === true,
+      });
+      if (modelChangeReasons.length > 0) {
+        throw new SessionCoreError(modelChangeReasons.join(", "), modelChangeReasons[0]!);
+      }
 
       const persist = input.persist === true;
       const scope = input.scope === "project" || input.scope === "global" ? input.scope : undefined;
@@ -1957,6 +3473,7 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
 
     "thinking.set": async (params) => {
       const current = ensure();
+      requireNoAttachmentContextMutation();
       const input = asRecord(params);
       const level = requireString(input.level, "level");
       const persist = input.persist === true;
@@ -1997,6 +3514,7 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
 
     compact: async (params) => {
       const current = ensure();
+      requireNoAttachmentContextMutation();
       const instructions = asRecord(params).instructions;
       const result = await current.compact?.(
         typeof instructions === "string" ? instructions : undefined,
@@ -2024,8 +3542,16 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
   for (const method of SESSION_TRANSITION_METHODS) {
     const handler = handlers[method];
     if (!handler) continue;
-    handlers[method] = (params, context) =>
-      serializeSessionTransition(() => Promise.resolve().then(() => handler(params, context)));
+    handlers[method] = (params, context) => {
+      if (attachmentDispatch.blocksContextMutation()) {
+        return Promise.reject(
+          new SessionCoreError("an attachment turn is active; wait for it to settle", "busy"),
+        );
+      }
+      return serializeSessionTransition(() =>
+        Promise.resolve().then(() => handler(params, context)),
+      );
+    };
   }
 
   return {
@@ -2033,10 +3559,45 @@ export function createSessionCore(deps: SessionCoreDeps): SessionCore {
     snapshot,
     session: () => session,
     identity: () => ({ sessionId: session?.sessionId ?? null, epoch: sessionEpoch }),
+    attachmentDeliverySupport: () =>
+      attachmentTransfer &&
+      imagePreparation &&
+      deps.dispatchAttachmentPrompt &&
+      deps.listAttachmentSubmissions
+        ? ATTACHMENT_DELIVERY_VERSION
+        : null,
     lastOpenTimings: () => lastOpen,
     cwd: () => cwd,
     dispose: async () => {
+      for (const id of transferContextRevisions.keys()) attachmentTransfer?.cancel(id);
+      for (const reader of transferReaders.values()) reader.close();
+      transferContextRevisions.clear();
+      transferReaders.clear();
+      plansByTransfer.clear();
+      attachmentDispatch.settle();
+      attachmentTransfer?.dispose();
+      imagePreparation?.dispose();
       promptOrigins.reset();
+      queueOrigins.reset();
+      try {
+        contributionBridge?.dispose();
+      } catch {
+        /* teardown is best-effort */
+      }
+      contributionBridge = null;
+      relatedBridge?.dispose();
+      relatedBridge = null;
+      try {
+        composerTransform?.dispose();
+      } catch {
+        /* teardown is best-effort */
+      }
+      composerTransform = null;
+      try {
+        contributionHost.reset();
+      } catch {
+        /* a gone renderer must not break dispose */
+      }
       unsubscribe?.();
       unsubscribe = null;
       unsubscribeErrors?.();

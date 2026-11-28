@@ -20,6 +20,8 @@
  * multi-line entry instead of returning to the draft.
  */
 
+import type { AttachmentTranscriptCard } from "../../../shared/attachments";
+import { groupedUserProse } from "../attachments/card";
 import type { VisualLinePosition } from "./textarea-visual-lines";
 
 /** pi-tui keeps 100 entries (`editor.js:316-318`); the store caps with this. */
@@ -154,6 +156,7 @@ export interface PromptHistoryMessage {
   role: string;
   blocks: readonly { kind: string; text?: string }[];
   promptOrigin?: string;
+  attachmentCard?: AttachmentTranscriptCard;
 }
 
 /**
@@ -164,12 +167,21 @@ export interface PromptHistoryMessage {
 export function promptHistoryText(message: PromptHistoryMessage): string | null {
   const origin = message.promptOrigin?.trim();
   if (origin) return origin;
-  const text = message.blocks
-    .flatMap((block) =>
-      block.kind === "text" && typeof block.text === "string" ? [block.text] : [],
-    )
-    .join("\n")
-    .trim();
+  // A managed attachment send recalls the user's prose, never the megabytes of
+  // framed file text Pi persisted after it. A mismatch falls back to the raw
+  // message so no content is silently dropped.
+  const grouped = groupedUserProse({
+    blocks: message.blocks,
+    ...(message.attachmentCard ? { attachmentCard: message.attachmentCard } : {}),
+  });
+  const text = (
+    grouped ??
+    message.blocks
+      .flatMap((block) =>
+        block.kind === "text" && typeof block.text === "string" ? [block.text] : [],
+      )
+      .join("\n")
+  ).trim();
   return text.length > 0 ? text : null;
 }
 

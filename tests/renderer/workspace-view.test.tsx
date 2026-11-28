@@ -60,11 +60,16 @@ function setup(
       drafts: {},
       grid: { layout, lastMultiLayout: layout === "single" ? "two" : layout, panes },
     },
-    tabs: [
-      tab(`${prefix}-1`, "first", 1),
-      tab(`${prefix}-2`, "second", 2),
-      tab(`${prefix}-3`, "third", 3),
-    ],
+    tabs: Array.from(
+      new Set([
+        `${prefix}-1`,
+        `${prefix}-2`,
+        `${prefix}-3`,
+        `${prefix}-c`,
+        ...panes.filter((id): id is string => id !== null),
+      ]),
+      (id, index) => tab(id, id, index + 1),
+    ),
     activeTabId: `${prefix}-1`,
     panePickerTarget: null,
     transcripts: {},
@@ -264,6 +269,7 @@ describe("the visible-set push", () => {
 
     // The focused tab comes first, then the other panes.
     await useAppStore.getState().assignPaneTab(1, "push4-c");
+    expect(useAppStore.getState().activeTabId).toBe("push4-c");
 
     await waitFor(() => expect(visibleTabPushes.at(-1)).toEqual(["push4-c", "push4-a"]));
   });

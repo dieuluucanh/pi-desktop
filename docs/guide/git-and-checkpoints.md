@@ -45,7 +45,13 @@ The top block, one row at a time:
   <kbd>Ctrl/Cmd</kbd>+<kbd>Enter</kbd> to commit, the counter and the identity it
   will use (hover it for the config file it came from), and a <kbd>⋯</kbd> menu holding
   _Amend last commit_ (which prefills the previous message) plus _Change_ /
-  _Set identity_.
+  _Set identity_. The **sparkle** in the message's top-right corner writes the
+  message for you, and the **chevron** beside it picks the model: _Default_ (the
+  model your Default mode uses, resolved per project) or any model in the
+  catalogue. It reads the **staged** changes only — the message lands in the
+  composer and you still press _Commit_. An existing draft is never replaced
+  without a confirmation, and an empty index is a warning, not an automatic
+  `git add`: the sparkle is `/commit`, never `/commit -a`.
 - **Stashes** — collapsed by default, with the count and _Stash changes_ still
   visible in the header. Open it for _Restore_ and _Drop_; dropping asks first,
   since the entry is deleted.
@@ -69,6 +75,14 @@ _Commit_ stays pressable even when something is missing. It explains what (stage
 something, write a message, set a git identity) only when you press it, as a
 notification, instead of printing a standing warning above the button.
 
+Generation is a model call, so it carries the same privacy fact as any other:
+the staged patch — a `--stat` summary, the recent commit subjects used as a
+style hint, and a bounded, truncated diff — is sent to the provider behind the
+model you chose, exactly as `/commit` already sends it when its model runs
+`git diff --staged` through bash. The app itself **stages nothing and commits
+nothing**; changes that are not staged are never read and never leave your
+machine, so the index you see is the index git will commit.
+
 ## What it needs
 
 - **Changes / History / Git** need `git` on your `PATH`. It is not bundled with
@@ -82,10 +96,10 @@ Nothing fails silently.
 ## Changes and History
 
 - **Changes** shows two collapsible groups, _Staged Changes_ and _Changes_, with
-  `M`/`A`/`D`/`R`/`C`/`U` badges, a per-file hover menu (_Show diff_, _Open file_,
+  `M`/`A`/`D`/`R`/`C`/`U` badges, a per-file hover menu (_Open file_,
   _Stage_/_Unstage_, _Discard_), and group-level _Stage all_ / _Unstage all_.
-  Clicking the path (or the diff icon) opens the side that group represents: the
-  index side under _Staged Changes_, the work tree under _Changes_. Rows are
+  Clicking the path opens the side that group represents: the index side under
+  _Staged Changes_, the work tree under _Changes_. Rows are
   sorted by path rather than git's order, so a newly created file cannot sink
   below a long list of modifications. A discard of a tracked file is a `git
 checkout --`; a discard of an **untracked** file moves it to the OS trash, not

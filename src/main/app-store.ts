@@ -17,6 +17,10 @@ import {
   type ProjectSettingsSnapshot,
 } from "../shared/projects";
 import { sanitizeTabs, type TabRecord } from "../shared/session-ipc";
+import {
+  sanitizeRelatedArchive,
+  type ArchivedRelatedSession,
+} from "../shared/related-session-archive";
 
 /**
  * The app's own persisted state (plan D14): which project is open, recent
@@ -46,6 +50,11 @@ export interface AppState {
   /** The tab the window should select after a relaunch. */
   activeTabId: string | null;
   /**
+   * Bounded archive of related sessions whose tab is closed (orchestrator step
+   * 13). It keeps the parent link and the transcript's durable handle.
+   */
+  relatedSessions: ArchivedRelatedSession[];
+  /**
    * Integrations (plan step 19): the app's own record of a consented install
    * and the last completed setup. Pi's settings remain the install source of
    * truth; this is what lets the card be honest about "installed by this app".
@@ -63,6 +72,7 @@ export function defaultAppState(): AppState {
     prefs: { ...DEFAULT_PREFS },
     tabs: [],
     activeTabId: null,
+    relatedSessions: [],
     integrations: emptyIntegrationsState(),
   };
 }
@@ -102,6 +112,7 @@ export function normalizeAppState(doc: SettingsDocument): AppState {
     prefs: sanitizePrefs(doc.prefs),
     tabs: sanitizeTabs(doc.tabs),
     activeTabId: typeof doc.activeTabId === "string" ? doc.activeTabId : null,
+    relatedSessions: sanitizeRelatedArchive(doc.relatedSessions),
     integrations: sanitizeIntegrationsState(doc.integrations),
   };
 }

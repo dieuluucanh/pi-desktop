@@ -129,6 +129,31 @@ describe("session core against the real SDK", () => {
     expect(Array.isArray(tools.tools)).toBe(true);
   }, 180_000);
 
+  it("reports the model catalog, provider auth and thinking levels", async () => {
+    core = buildCore();
+    await call(core, "session.create");
+
+    const available = (await call(core, "model.available")) as {
+      models: Array<{ id?: string; provider?: string }>;
+      auth: Record<string, unknown>;
+      thinkingLevels: string[];
+    };
+
+    // Credentials decide whether the catalog has *entries*; the contract the
+    // picker reads does not depend on them. `model.available` returns the SDK's
+    // own snapshot, which only lists models from configured providers ("Use
+    // /login to add providers"), so a throw-away profile on a clean CI runner
+    // legitimately yields an empty list.
+    expect(Array.isArray(available.models)).toBe(true);
+    expect(available.auth).not.toBeNull();
+    expect(typeof available.auth).toBe("object");
+    expect(Array.isArray(available.thinkingLevels)).toBe(true);
+    for (const model of available.models) {
+      // Every provider has an answer, which is what the "Sign in" badge reads.
+      expect(available.auth).toHaveProperty(model.provider ?? "");
+    }
+  }, 180_000);
+
   it("reports the open phase breakdown and stays inside a loose budget", async () => {
     core = buildCore();
     const created = (await call(core, "session.create")) as { sessionFile: string };
@@ -169,18 +194,14 @@ describe("session core against the real SDK", () => {
       auth: Record<string, { configured?: boolean }>;
       thinkingLevels: string[];
     };
-    if (available.models.length === 0) {
-      ctx.skip("no configured provider in the throw-away profile");
-    }
-    expect(available.models.length).toBeGreaterThan(0);
-    expect(Array.isArray(available.thinkingLevels)).toBe(true);
-    for (const model of available.models) {
-      // Every provider has an answer, which is what the "Sign in" badge reads.
-      expect(available.auth[model.provider ?? ""]).toBeDefined();
-    }
-
     const target = available.models.find((model) => model.id && model.provider);
-    expect(target).toBeTruthy();
+    if (!target) {
+      // Nothing to switch to: no provider is configured in this profile (see the
+      // catalog test above). Skip visibly rather than assert a credential that a
+      // clean runner does not have — a silent pass would hide the gap.
+      ctx.skip();
+      return;
+    }
 
     const afterSet = (await call(core, "model.set", { model: target, persist: false })) as {
       model?: { id?: string; provider?: string };

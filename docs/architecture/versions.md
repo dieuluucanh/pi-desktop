@@ -1,6 +1,6 @@
 # Pinned versions
 
-Recorded 2026-09-19. Every pin is exact in `package.json` except where noted.
+Recorded 2026-11-28. Every pin is exact in `package.json` except where noted.
 Changing a pin here means changing it there.
 
 | Component                                          | Pin                  | Why                                                                                                                                                                                                                                     |
@@ -10,8 +10,8 @@ Changing a pin here means changing it there.
 | `vite`                                             | `^7.3.6`             | `electron-vite@5` peers `vite ^5 \|\| ^6 \|\| ^7`; Vite 8 is not accepted yet.                                                                                                                                                          |
 | `@vitejs/plugin-react`                             | `5.2.0`              | 6.x requires Vite 8.                                                                                                                                                                                                                    |
 | `react` / `react-dom`                              | `19.3.0`             | Latest stable.                                                                                                                                                                                                                          |
-| `@earendil-works/pi-coding-agent`                  | `1.5.0` (exact)      | The SDK contract we build against (`bindExtensions`, `ExtensionUIContext`, `DefaultPackageManager`, exported `main`). See risk R1.                                                                                                      |
-| `@earendil-works/pi-agent-core`, `pi-ai`, `pi-tui` | `1.5.0` (exact)      | Must match the coding agent exactly.                                                                                                                                                                                                    |
+| `@earendil-works/pi-coding-agent`                  | `1.7.0` (exact)      | The SDK contract we build against (`bindExtensions`, `ExtensionUIContext`, `DefaultPackageManager`, exported `main`). See risk R1.                                                                                                      |
+| `@earendil-works/pi-agent-core`, `pi-ai`, `pi-tui` | `1.7.0` (exact)      | Must match the coding agent exactly.                                                                                                                                                                                                    |
 | `typebox`                                          | `1.3.27` (exact)     | Matches the version the coding agent depends on, so extensions get the same runtime.                                                                                                                                                    |
 | `electron-builder`                                 | `26.15.3`            | Packaging (plan step 26): NSIS + portable, dmg/zip, AppImage/deb.                                                                                                                                                                       |
 | `node-pty`                                         | `1.1.0` (exact)      | The integrated terminal's only native module. Linux has no upstream prebuild, so releases compile it in a digest-pinned `debian:bullseye` container and gate on **glibc 2.31 / `GLIBCXX_3.4.28`**; see `docs/architecture/terminal.md`. |
@@ -87,6 +87,15 @@ not part of the Electron dependency tree. Pins at the first site release:
 The site build runs in `site/` with `npm ci --prefix site`; the Electron build
 never installs those dependencies. `docs/` remains the single docs source and
 `site/src/content/docs/` is generated and gitignored.
+
+## Bundled Workflow extension
+
+`@dieulc/workflow` is bundled by path, not an app dependency pin.
+`resources/workflow.lock.json` pins **0.17.5** from the public npm tarball
+(`https://registry.npmjs.org/@dieulc/workflow/-/workflow-0.17.5.tgz`), with the
+per-file sha256 manifest and the sha512 integrity checked by
+`npm run workflow:stage` / `workflow:verify`. CI stages the artifact after the
+host build and verifies both staged copies before packaging.
 
 ## Published extension (independent version)
 

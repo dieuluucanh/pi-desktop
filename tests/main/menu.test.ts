@@ -143,21 +143,11 @@ describe("menuTemplate", () => {
     expect(items.some((item) => item.role === "resetZoom")).toBe(false);
   });
 
-  it("binds the Todo Panel toggle to Ctrl+Alt+L and leaves Ctrl+Alt+O to Sessions", () => {
+  it("leaves Ctrl+Alt+O to Sessions and has no Workflow-specific todo submenu", () => {
     const { template } = build();
     const view = template.find((item) => item.label === "View");
-    const todo = (view?.submenu as MenuItemConstructorOptions[] | undefined)?.find(
-      (item) => item.label === "Todo Panel",
-    );
-    const items = (todo?.submenu as MenuItemConstructorOptions[] | undefined) ?? [];
-    const byId = (id: string) => items.find((item) => item.id === id);
-
-    expect(byId("todos-toggle")?.accelerator).toBe("CmdOrCtrl+Alt+L");
-    expect(byId("todos-auto")).toBeTruthy();
-    expect(byId("todos-expand")).toBeTruthy();
-    expect(byId("todos-collapse")).toBeTruthy();
-    expect(byId("todos-hide")).toBeTruthy();
-
+    const submenu = (view?.submenu as MenuItemConstructorOptions[] | undefined) ?? [];
+    expect(submenu.some((item) => item.label === "Todo Panel")).toBe(false);
     const sessions = allItems(template).find((item) => item.id === "view-sessions");
     expect(sessions?.accelerator).toBe("CmdOrCtrl+Alt+O");
   });

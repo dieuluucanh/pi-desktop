@@ -57,6 +57,10 @@ export interface LaunchedApp {
   app: ElectronApplication;
   window: Page;
   paths: LaunchPaths;
+  /** Complete main-process stdout/stderr captured for launch diagnostics. */
+  output: string[];
+  /** Main-process stderr, retained separately for regression assertions. */
+  stderr: string[];
   /** Closes the app and resolves with its exit code. */
   close(): Promise<number | null>;
 }
@@ -109,8 +113,13 @@ export async function launchApp(options: LaunchOptions = {}): Promise<LaunchedAp
   // The process handle is captured now because `app.close()` invalidates it.
   const child = app.process();
   const output: string[] = [];
+  const stderr: string[] = [];
   child.stdout?.on("data", (chunk: Buffer) => output.push(chunk.toString()));
-  child.stderr?.on("data", (chunk: Buffer) => output.push(chunk.toString()));
+  child.stderr?.on("data", (chunk: Buffer) => {
+    const text = chunk.toString();
+    output.push(text);
+    stderr.push(text);
+  });
 
   let window: Page;
   try {
@@ -130,6 +139,8 @@ export async function launchApp(options: LaunchOptions = {}): Promise<LaunchedAp
     app,
     window,
     paths: { userDataDir, profileDir, appRoot: root },
+    output,
+    stderr,
     close: async () => {
       await app.close();
       return child.exitCode;

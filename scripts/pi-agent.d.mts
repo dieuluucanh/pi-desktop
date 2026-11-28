@@ -40,6 +40,10 @@ export interface PiAgentReport {
 }
 
 export function parseArgs(argv: string[]): CliOptions;
+export function npmInvocation(
+  platform?: NodeJS.Platform,
+  env?: Record<string, string | undefined>,
+): { cmd: string; args: string[] };
 export function readRegistry(input: { root: string; registryFile: string | null }): RegistryFacts;
 export function bundledNodeVersion(root: string): string | null;
 export function buildReport(input: { root: string; registry: RegistryFacts }): PiAgentReport;

@@ -31,6 +31,23 @@ const MIME_BY_EXTENSION: Record<string, string> = {
   bmp: "image/bmp",
 };
 
+/**
+ * Attachment identity (2026-11-22 prompt-refinement plan step 18).
+ *
+ * The id used to be derived from the file (name, size, encoded length), so the
+ * same screenshot pasted twice produced two attachments sharing one id: a
+ * remove took both chips away and a revision check could not tell the copies
+ * apart. Identity is per attachment instance now; name, mime type and data
+ * still describe the file, and the payload is unchanged.
+ */
+let attachmentSequence = 0;
+
+/** A new unique attachment id. Renderer-only: never persisted. */
+export function nextAttachmentId(): string {
+  attachmentSequence += 1;
+  return `image-${attachmentSequence}`;
+}
+
 /** MIME type for a file name, or null when it is not an image we accept. */
 export function imageMimeFromName(name: string): string | null {
   const extension = name.split(".").pop()?.toLowerCase() ?? "";
@@ -118,7 +135,7 @@ export async function fileToAttachment(file: File): Promise<ImageAttachment | nu
   if (raw.length === 0) return null;
   const { dataUrl, mimeType } = await downscaleDataUrl(raw, declared);
   return {
-    id: `${file.name}:${file.size}:${dataUrl.length}`,
+    id: nextAttachmentId(),
     name: file.name,
     mimeType,
     data: dataUrlPayload(dataUrl),

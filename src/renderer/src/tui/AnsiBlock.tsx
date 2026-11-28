@@ -89,11 +89,20 @@ export interface AnsiLineProps {
    * background fill; the app paints that with its own tokens.
    */
   selection?: boolean;
+  /**
+   * Opt-in soft wrapping for surfaces that share a text row with other content
+   * (the session footer rail, plan step 4). A wrapped line drops the fixed-width
+   * padding, so it must not be used on the terminal grid. Defaults to `false`,
+   * which keeps the TUI surface's `whitespace-pre` grid behavior.
+   */
+  wrap?: boolean;
 }
 
-export function AnsiLine({ line, width, selection }: AnsiLineProps): ReactElement {
+export function AnsiLine({ line, width, selection, wrap }: AnsiLineProps): ReactElement {
   const spans = parseAnsiLine(line);
-  const pad = Math.max(0, width - visibleWidth(line));
+  // Padding to the host's cell width only makes sense on the fixed terminal
+  // grid; a wrapped line is sized by its container instead.
+  const pad = wrap === true ? 0 : Math.max(0, width - visibleWidth(line));
   // The padding keeps the last span's background so a filled row stays filled.
   // A selection is the exception: it marks one element and must not bleed into
   // the rest of the line.
@@ -102,7 +111,12 @@ export function AnsiLine({ line, width, selection }: AnsiLineProps): ReactElemen
     ? ansiStyleToCss(selection ? { ...last.style, bg: null } : last.style)
     : undefined;
   return (
-    <div className="ansi-line whitespace-pre" data-ansi-line="">
+    <div
+      className={
+        wrap === true ? "ansi-line whitespace-pre-wrap break-words" : "ansi-line whitespace-pre"
+      }
+      data-ansi-line=""
+    >
       {spans.map((span, index) => (
         <AnsiSpanView key={index} span={span} selected={selection === true} />
       ))}

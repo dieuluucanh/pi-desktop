@@ -21,6 +21,10 @@ const CORE_DIRS = [
   // checkpoint extension), so neither may reach for Electron.
   "src/git",
   "src/checkpoints",
+  // The attachment store and future extractors run outside Electron too.
+  "src/attachments",
+  // The document-extraction worker is a separate process: no Electron/SDK.
+  "src/extraction",
   // The pure workspace engines (file listing, path containment, content) are
   // shared by main and the host; neither may reach for Electron.
   "src/workspace",
@@ -33,6 +37,14 @@ const CORE_FILES = [
   "src/main/diagnostics-service.ts",
   "src/main/security.ts",
   "src/main/branding.ts",
+  "src/main/attachment-store-io.ts",
+  "src/main/attachment-source-io.ts",
+  "src/main/attachment-service.ts",
+  "src/main/attachment-delivery-assets.ts",
+  "src/main/attachment-delivery-leases.ts",
+  "src/main/attachment-delivery-transfer.ts",
+  "src/main/attachment-picker.ts",
+  "src/main/extraction-supervisor.ts",
   // Ports-injected services (git-checkpoint plan steps 8/20): the rail's push
   // loops, with `isWindowFocused`/`onResume`/`trash`/`attachedPanes` supplied by
   // `src/main/index.ts` rather than imported here.

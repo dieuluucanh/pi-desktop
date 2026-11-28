@@ -37,12 +37,19 @@ describe("recommended packages", () => {
     expect(RECOMMENDED_PACKAGES.map((entry) => entry.id)).toEqual([
       "dieulc-autocompact",
       "pi-office-bridge",
-      "dieulc-workflow",
       "plannotator",
       "pi-lens",
       "pi-memory",
       "pi-web-access",
     ]);
+  });
+
+  it("does not offer Workflow, which the app already ships as builtin:workflow", () => {
+    // Plan step 27: a recommended npm install of the extension the app bundles
+    // would be a duplicate default. The package manager below the cards still
+    // installs an explicit npm/git/profile override for anyone who wants it.
+    expect(RECOMMENDED_PACKAGES.map((entry) => entry.name)).not.toContain("@dieulc/workflow");
+    expect(RECOMMENDED_PACKAGES.map((entry) => entry.source)).not.toContain("npm:@dieulc/workflow");
   });
 
   it("does not recommend packages that were dropped from the set", () => {
@@ -75,10 +82,10 @@ describe("packageNameOf", () => {
 
 describe("isRecommendedInstalled", () => {
   it("matches a configured package regardless of prefix or version", () => {
-    const workflow = RECOMMENDED_PACKAGES.find((entry) => entry.id === "dieulc-workflow");
-    if (!workflow) throw new Error("fixture drift");
-    expect(isRecommendedInstalled(workflow, [])).toBe(false);
-    expect(isRecommendedInstalled(workflow, ["npm:@dieulc/workflow@0.3.0"])).toBe(true);
-    expect(isRecommendedInstalled(workflow, ["@dieulc/other"])).toBe(false);
+    const lens = RECOMMENDED_PACKAGES.find((entry) => entry.id === "pi-lens");
+    if (!lens) throw new Error("fixture drift");
+    expect(isRecommendedInstalled(lens, [])).toBe(false);
+    expect(isRecommendedInstalled(lens, ["npm:pi-lens@0.3.0"])).toBe(true);
+    expect(isRecommendedInstalled(lens, ["some-other-package"])).toBe(false);
   });
 });

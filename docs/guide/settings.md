@@ -78,6 +78,19 @@ it opens a one-off terminal with another detected profile; **Select default
 profile…** opens this card. Ctrl/Cmd + = / - changes the terminal's font size,
 and Ctrl/Cmd + 0 resets it.
 
+## Editor (app-owned)
+
+**Settings → Editor** holds the file editor's defaults, separate from Pi's
+theme:
+
+- **Font size** — 11–20 px for the editor content.
+- **Default wrap** — `Auto (prose)` wraps Markdown, MDX and plain text while
+  leaving code unwrapped; `Always` and `Never` are unconditional.
+
+The editor toolbar's Wrap button (<kbd>Alt</kbd>+<kbd>Z</kbd>) overrides
+wrapping for the current tab only; the override clears when the tab closes and
+does not change these defaults.
+
 ## Preferences that are _not_ Pi settings
 
 A few things live in app state on purpose, so they never change terminal Pi’s
@@ -91,7 +104,7 @@ behaviour:
   (`prefs.zoomFactor`; View → Zoom In / Zoom Out / Actual Size, or
   <kbd>Ctrl/Cmd</kbd>+<kbd>=</kbd> / <kbd>-</kbd> / <kbd>0</kbd>);
 - sidebar layout and per-tab drafts;
-- telemetry opt-in (`PI_TELEMETRY=0` unless enabled);
+- no install-telemetry setting (Pi 1.7.0 removed it);
 - the Pi profile choice (shared vs app-private);
 - `externalEditor` is a Pi setting, but the launcher that spawns the editor is
   app-side.
@@ -111,3 +124,11 @@ use **Unmute all**. Both layers only hide a notification from the bell and
 toasts: the archive keeps it, and the bell's **Show hidden (N)** can recover it.
 See
 [extension UI](../architecture/extension-ui.md#notification-classes-offers-and-muting-2026-11-08-offers-derived-2026-11-18).
+
+## Attachments
+
+**Settings → Attachments** reports local attachment usage, quota, free space,
+recoverable copies and unreferenced copies. **Reclaim space** removes only
+app-owned copies that no session references and that are outside the 30-day
+recovery window; it never deletes Pi history, provider-retained data or project
+files. See [Attachments](attachments.md).

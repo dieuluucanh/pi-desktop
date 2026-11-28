@@ -49,19 +49,18 @@ grant trust. The composer's `!` stays the agent-visible command runner. See
 
 **Can I open several projects at once?**
 Yes — tabs are per session and sessions belong to projects; the sidebar groups
-them. There is one window in v0.11.0 (multi-window is backlog).
+them. There is one window in v0.12.0 (multi-window is backlog).
 
 **Why does Windows/macOS warn when I install it?**
-The v0.11.0 artefacts are unsigned. Windows SmartScreen: “More info → Run anyway”.
+The v0.12.0 artefacts are unsigned. Windows SmartScreen: “More info → Run anyway”.
 macOS refuses the first launch without offering a right-click override: open
 **System Settings → Privacy & Security**, scroll to the bottom and choose
 **Open Anyway**. See [Getting started](getting-started.md#installing-on-macos).
 Signing is tracked in the backlog.
 
 **Does the app send telemetry?**
-Not unless you opt in. Pi’s install telemetry is forced off with
-`PI_TELEMETRY=0`; the first-run screen explains it, and turning it on is an app
-preference that never rewrites the shared `settings.json`.
+Pi 1.7.0 removed its install telemetry and the `PI_TELEMETRY` switch. The app
+sends no usage data of its own; the first-run screen is a local-data notice.
 
 **Can extensions do anything they want?**
 Extensions are not sandboxed — the same as terminal Pi. That is why installs
@@ -79,7 +78,7 @@ the view says so. Package installs are separate: the app updates its own code,
 the package manager updates extensions.
 
 **Is it translated?**
-Not yet (i18n is backlog). The UI is English in v0.11.0.
+Not yet (i18n is backlog). The UI is English in v0.12.0.
 
 **How do I copy the proposed commit message from `/commit`?**
 The extension renders it in a questionnaire panel. Select the text and press

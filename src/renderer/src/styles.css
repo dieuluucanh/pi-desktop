@@ -19,17 +19,16 @@
  */
 
 /*
- * The workflow-mode border classes are chosen at runtime from
- * `src/shared/workflow-mode.ts` (`workflowBorderClass`), which is outside the
- * renderer's scan root (`electron.vite.config.ts` → root `src/renderer`), so
- * Tailwind never saw its literals and `border-warn` compiled to nothing.
- * `@source` registers the module directory, and `@source inline(...)` pins the
- * exact utilities so a directory move cannot silently drop them again.
- * `tests/styles-layering.test.ts` keeps this list in sync with the
- * function's return values.
+ * The composer border classes are chosen at runtime from a semantic tone
+ * table. When that table lived in `src/shared` (outside the renderer's scan
+ * root, `electron.vite.config.ts` → root `src/renderer`) Tailwind never saw its
+ * literals and the composer border compiled to nothing.
+ * Every tone literal now lives under the renderer root
+ * (`src/renderer/src/session/contribution-tone.ts`), and `@source inline(...)`
+ * still pins the exact utilities so a directory move cannot drop them again.
+ * `tests/styles-layering.test.ts` keeps this list in sync with that table.
  */
-@source "../../../shared";
-@source inline("border-line border-accent border-warn text-accent text-warn text-ink-faint");
+@source inline("border-line border-accent border-info border-ok border-warn border-danger text-ink-faint text-accent text-info text-ok text-warn text-danger");
 
 @layer base {
   * {

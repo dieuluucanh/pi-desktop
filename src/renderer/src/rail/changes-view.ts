@@ -52,7 +52,8 @@ export function isUntracked(file: GitFileEntry): boolean {
 }
 
 /**
- * The diff request a row's path click (or its Show diff icon) sends.
+ * The diff request a row's path click sends (the path is the row's one diff
+ * target).
  *
  * A staged row reads the index side; an untracked file has no index side, so it
  * is a work-tree read the engine answers with a synthesised full-file diff;

@@ -94,6 +94,21 @@ describe("extension render store", () => {
   });
 
   it("adopts an extension's expand state from an oi.state push", () => {
+    useAppStore.setState({
+      tabs: [
+        {
+          id: TAB,
+          kind: "session",
+          cwd: "C:/work/app",
+          title: "app",
+          sessionFile: null,
+          status: "idle",
+          createdAt: 1,
+          lastActiveAt: 1,
+          model: null,
+        },
+      ],
+    });
     useAppStore.getState().handleExtensionUiEvent(TAB, {
       event: EXTENSION_UI_STATE_EVENT,
       payload: { toolsExpanded: true },

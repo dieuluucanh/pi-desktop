@@ -8,6 +8,7 @@
  */
 
 import { DEFAULT_PROFILE_MODE, sanitizeProfileMode, type ProfileMode } from "./profile";
+import { isAttachmentId } from "./attachments";
 import {
   DEFAULT_GRID_PREFS,
   mergeGridPrefs,
@@ -54,6 +55,12 @@ import {
   sanitizeUpdatePrefs,
   type UpdatePrefs,
 } from "./updates";
+import {
+  DEFAULT_COMMIT_MESSAGE_PREFS,
+  mergeCommitMessagePrefs,
+  sanitizeCommitMessagePrefs,
+  type CommitMessagePrefs,
+} from "./commit-prefs";
 
 export const PREF_KEYS = [
   "theme",
@@ -63,7 +70,7 @@ export const PREF_KEYS = [
   "sidebarCollapsed",
   "sidebarWidth",
   "drafts",
-  "telemetryEnabled",
+  "attachmentDraftIds",
   "privacyAcknowledged",
   "profileMode",
   "onboardingCompletedAt",
@@ -75,6 +82,7 @@ export const PREF_KEYS = [
   "editor",
   "terminal",
   "explorer",
+  "commitMessage",
   "checkpoints",
   "updates",
   "packages",
@@ -198,13 +206,8 @@ export interface UiPrefs {
    * tab switch or an app restart. Bounded below: a draft is not a document.
    */
   drafts: Record<string, string>;
-  /**
-   * Pi's install telemetry (plan step 23). **Off by default**: every host is
-   * spawned with `PI_TELEMETRY=0` unless this is true, so the app never sends an
-   * install/attribution ping the user did not opt into. It is an app preference
-   * on purpose — turning it on must not rewrite Pi's shared `settings.json`.
-   */
-  telemetryEnabled: boolean;
+  /** Stable app-owned attachment draft identities; bearer grants and file bytes stay transient. */
+  attachmentDraftIds: Record<string, string>;
   /**
    * Whether the first-run privacy screen has been answered (plan step 23). Until
    * it is, the app shows the opt-in prompt; telemetry stays off regardless.
@@ -270,6 +273,11 @@ export interface UiPrefs {
   /** File-explorer view preferences (hidden/ignored visibility, sort order). */
   explorer: ExplorerPrefs;
   /**
+   * The model that writes AI commit messages (2026-11-25 plan step 17).
+   * `null` means Default: the project's then the global saved default.
+   */
+  commitMessage: CommitMessagePrefs;
+  /**
    * Folder checkpoints (git-checkpoint plan D19): **the** source of the
    * checkpoint settings. Main projects this object to
    * `<profileDir>/checkpoints/config.json` on every change so the host-side Pi
@@ -316,7 +324,7 @@ export const DEFAULT_PREFS: UiPrefs = {
   sidebarCollapsed: false,
   sidebarWidth: DEFAULT_SIDEBAR_WIDTH,
   drafts: {},
-  telemetryEnabled: false,
+  attachmentDraftIds: {},
   privacyAcknowledged: false,
   profileMode: DEFAULT_PROFILE_MODE,
   onboardingCompletedAt: null,
@@ -337,6 +345,7 @@ export const DEFAULT_PREFS: UiPrefs = {
   editor: { ...DEFAULT_EDITOR_PREFS, formatters: {} },
   terminal: { ...DEFAULT_TERMINAL_PREFS },
   explorer: { ...DEFAULT_EXPLORER_PREFS },
+  commitMessage: { ...DEFAULT_COMMIT_MESSAGE_PREFS },
   // A fresh object for the same reason as `rail`: a caller mutating one prefs
   // value must not mutate the module-level default (nor the shared config).
   checkpoints: { ...DEFAULT_CHECKPOINT_CONFIG, exclude: [] },
@@ -372,6 +381,25 @@ export function sanitizeDrafts(input: unknown): Record<string, string> {
   return drafts;
 }
 
+/** Persists only stable opaque IDs; the per-process authority token is never stored. */
+export function sanitizeAttachmentDraftIds(input: unknown): Record<string, string> {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return {};
+  const result: Record<string, string> = {};
+  for (const [tabId, draftId] of Object.entries(input as Record<string, unknown>)) {
+    if (
+      tabId.length === 0 ||
+      tabId.length > 128 ||
+      Array.from(tabId).some((character) => character.charCodeAt(0) < 32) ||
+      !isAttachmentId(draftId)
+    ) {
+      continue;
+    }
+    result[tabId] = draftId;
+    if (Object.keys(result).length >= MAX_DRAFT_TABS) break;
+  }
+  return result;
+}
+
 /** Keeps the draft map small and string-valued; unknown tabs are dropped. */
 export function sanitizePrefs(input: unknown): UiPrefs {
   const source = input && typeof input === "object" ? (input as Record<string, unknown>) : {};
@@ -395,10 +423,9 @@ export function sanitizePrefs(input: unknown): UiPrefs {
         ? clampSidebarWidth(source.sidebarWidth)
         : DEFAULT_PREFS.sidebarWidth,
     drafts: sanitizeDrafts(source.drafts),
+    attachmentDraftIds: sanitizeAttachmentDraftIds(source.attachmentDraftIds),
     // A missing value is off: an older app-state.json (or a fresh profile) must
     // never opt the user into telemetry by omission.
-    telemetryEnabled:
-      typeof source.telemetryEnabled === "boolean" ? source.telemetryEnabled : false,
     privacyAcknowledged:
       typeof source.privacyAcknowledged === "boolean" ? source.privacyAcknowledged : false,
     profileMode: sanitizeProfileMode(source.profileMode),
@@ -427,6 +454,9 @@ export function sanitizePrefs(input: unknown): UiPrefs {
     // supplies the defaults, so no version bump is needed.
     terminal: sanitizeTerminalPrefs(source.terminal),
     explorer: sanitizeExplorerPrefs(source.explorer),
+    // New in 2026-11: an older app-state.json has no block, so Default (null)
+    // is the answer rather than a migration.
+    commitMessage: sanitizeCommitMessagePrefs(source.commitMessage),
     // Checkpoints are **on by default** (D14); the caps are what make that
     // defensible, so an older app-state.json without the key gets the defaults
     // rather than an off switch it never asked for. Unknown keys are dropped by
@@ -457,6 +487,12 @@ export function mergePrefs(current: UiPrefs, patch: unknown): UiPrefs {
     "editor" in source ? mergeEditorPrefs(current.editor, source.editor) : current.editor;
   const explorer =
     "explorer" in source ? mergeExplorerPrefs(current.explorer, source.explorer) : current.explorer;
+  // The commit-message block is nested one level (`{ model }`), so a patch that
+  // names only the model must keep the rest of the block (the sanitizer decides).
+  const commitMessage =
+    "commitMessage" in source
+      ? mergeCommitMessagePrefs(current.commitMessage, source.commitMessage)
+      : current.commitMessage;
   // Every terminal preference is flat, so a patch that names only the font must
   // keep the chosen profile and shell path.
   const terminal =
@@ -502,6 +538,7 @@ export function mergePrefs(current: UiPrefs, patch: unknown): UiPrefs {
     editor,
     terminal,
     explorer,
+    commitMessage,
     checkpoints,
     notifications,
     updates,

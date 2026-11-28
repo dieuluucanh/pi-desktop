@@ -1,9 +1,11 @@
 # File explorer and editor
 
 **Status:** implemented 2026-11-01 (plan steps 1-13); project-wide search and
-drag-to-chat extended 2026-11-02. See
-`.pi/plans/2026-11-01-file-explorer-and-editor.md` and
-`.pi/plans/2026-11-02-explorer-search-and-drag-to-chat.md` for the designs.
+drag-to-chat extended 2026-11-02; the compact reading column was removed
+2026-11-27, so the editor fills the pane for every file type. See
+`.pi/plans/2026-11-01-file-explorer-and-editor.md`,
+`.pi/plans/2026-11-02-explorer-search-and-drag-to-chat.md` and
+`.pi/plans/2026-11-27-0727-editor-full-width.md` for the designs.
 
 ## Surfaces
 
@@ -168,6 +170,30 @@ surface still pending).
   focus, and native browser focus scrolling covers keyboard traversal. The
   tab-strip horizontal scrollbar is 2 px; the strips reset
   `scrollbar-width`/`scrollbar-color` so the WebKit pixel size applies.
+
+## Wrap
+
+Wrap (`wordWrap`) is the editor's only layout default. It is stored in
+`prefs.editor` in the app state file and editable under **Settings → Editor**:
+
+- `auto` is prose-only: it wraps `markdown`, `mdx` and `plaintext` and leaves
+  code unwrapped, so a plan or a README reads like a document while a `.ts`
+  file keeps its line structure.
+- `always` and `never` are unconditional, for every language.
+
+The editor always fills the pane, for every file type; there is no width
+preference and no column measure. A centred `ch` column was once applied to
+`.cm-editor`, the parent of CodeMirror's scroller, so the scroller — and
+therefore the vertical scrollbar — sat inside the column with free space beside
+it. The column was removed on 2026-11-27
+(`.pi/plans/2026-11-27-0727-editor-full-width.md`), so prose wraps at the pane
+width and never needs a horizontal scrollbar, while unwrapped code can still
+scroll horizontally.
+
+The toolbar's Wrap button / **Alt+Z** toggles wrapping for the focused tab. It
+is the only per-tab toggle: the override is session-scoped in `editor-store`,
+never writes prefs, and is dropped when the tab closes, so reopening the file
+uses the Settings default again.
 
 ## File actions
 

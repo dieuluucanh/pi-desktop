@@ -9,6 +9,7 @@
  */
 
 import type { SessionEventEntry } from "../../../src/shared/session-ipc";
+import type { QueueOrigins } from "../../../src/shared/queue-origin";
 
 export function event(name: string, payload: unknown = {}): SessionEventEntry {
   return { event: name, payload };
@@ -72,8 +73,21 @@ export const fixtures = {
     fixtures.messageEnd({ role: "toolResult", toolCallId, toolName, content, isError }, id),
   ],
 
-  queue: (steering: string[] = [], followUp: string[] = []): SessionEventEntry =>
-    event("queue_update", { steering, followUp }),
+  /**
+   * `queue_update`. The optional `origins` is the host's parallel annotation
+   * (`queueOrigins`); omitting it reproduces a legacy host, whose frames read as
+   * the user's own turns.
+   */
+  queue: (
+    steering: string[] = [],
+    followUp: string[] = [],
+    origins?: Partial<QueueOrigins>,
+  ): SessionEventEntry =>
+    event("queue_update", {
+      steering,
+      followUp,
+      ...(origins ? { queueOrigins: origins } : {}),
+    }),
   compactionStart: (): SessionEventEntry => event("compaction_start", { reason: "manual" }),
   compactionEnd: (
     summary = "Compacted summary",

@@ -20,10 +20,17 @@ status bar       active project path · build version · Pi profile · bundled
 panel rail       docked at the right edge of a session: an always-visible 44 px
                  menu strip (Source Control · Checkpoints · Documents) beside one
                  resizable panel body; the strip's order is user-adjustable
+working bar      one thin extension row directly above the composer (the old
+                 WorkingRow + ContributionsBar duo): working status/hint, inline
+                 publisher controls, a linked-tab button, the three-dot action
+                 menu and the input-lock marker; it is absent when a tab has
+                 nothing to show
 session footer   one responsive status rail under the composer: pwd (branch) ·
                  tokens/cost/context · model • thinking · extension statuses
-                 (ctx.ui.setStatus) · single-line extension widgets; an extension
-                 ctx.ui.setFooter() replaces the whole footer
+                 (ctx.ui.setStatus) · contribution status/progress rows ·
+                 single-line extension widgets; it wraps inside a bounded rail,
+                 and an extension ctx.ui.setFooter() replaces the whole footer
+                 (so the contribution rows are not injected into it)
 overlays         command palette (Ctrl+K), toast host
 ```
 
@@ -200,49 +207,52 @@ rendered as a footer column instead of its own strip (2026-10-31 UI plan);
 multi-line frames keep Pi's placement. The TUI grid is measured from this column,
 never from the surface's own rendered frame (`src/renderer/src/tui/use-tui-viewport.ts`).
 
-**The Workflow todo panel has a native control bar (2026-11-18).** The panel
-itself stays the extension's read-only `workflow-todos` frame. `TodoPanelBar`
-sits above the above-editor strips in every workflow mode, including Review and
-while a questionnaire owns the composer. It shows `Todos done/total`, the
-effective state, and settled/stale markers, with an Expand/Collapse toggle and a
-menu for Automatic / Show full list / Collapse / Hide. The bar stays mounted when
-the list is hidden, so Hide is reversible. Actions dispatch `/todos <verb>`
-through `commands.run` (not a prompt), so they work in Review and behind a TUI
-overlay; focus returns to the surface or composer afterwards. The desktop chord
-is `Ctrl+Alt+L`; `Ctrl+Alt+O` remains Sessions. The extension publishes a compact
-`workflow-todos` status while its panel is hidden or Review owns the turn; the
-bar hides that key from the footer to avoid a duplicate. A widget frame now
-carries its `setWidget` key (`TuiFrame.key`), which is how the bar identifies the
-panel. Older `@dieulc/workflow` versions degrade to no Review+hidden bar, while
-the menu/palette still dispatch the command.
+**Extension-owned panels are read-only, generic frame strips (2026-11-22).**
+A component-factory widget is drawn from the publisher's ANSI frame only; the
+renderer never parses its content, glyphs or key to infer state. The retired
+Workflow compatibility layer (`src/shared/workflow-mode.ts`,
+`src/shared/workflow-todos.ts`, `ReviewBar`, `TodoPanelBar`) is gone and
+`tests/architecture/no-workflow-adapters.test.ts` keeps it from returning. What
+replaces it is the generic contribution contract: a publisher contributes
+`mode`/`mode-choice`/`progress`/`status`/`action`/`input` rows that
+`src/renderer/src/session/WorkingBar.tsx` renders with no extension name, and
+the composer draws an arbitrary publisher's `composer-control` in a generic
+bottom-right row (`ComposerControls.tsx`, see
+[extension-ui.md](extension-ui.md#composer-transform-contract-frozen-row-13)). An
+action names a registered command that the host re-validates; nothing is
+special-cased for one extension. An older extension that publishes only status
+prose still lands in the footer rail, just without the richer structured
+controls. The extension's own TODO panel — header included — is a read-only
+frame and is neither moved nor re-composed by the app; the session footer is the
+telemetry rail (see below).
 
-**The workflow mode is shown as text, not just colour.** The composer's textarea
-border reflects the Workflow extension's mode (`Plan` → warn, `Build` → accent,
-`Review` → info), decoded from its status text by
-`src/shared/workflow-mode.ts`; an unrecognised value degrades to the neutral
-border rather than guessing. Since `@dieulc/workflow` 0.11.0 the desktop names
-four modes (Default/Plan/Build/Review). Review is a real mode, not a Plan
-sub-state: the status carries the phase (`🔍 review`, `— paused`,
-`— awaiting decision`), the composer badge reads `Review`, and the legacy
-Plannotator `⏸ plan — reviewing in browser` phrase is still parsed as Plan
-because the old extension emitted it in every Plan mode (2026-11-14
-review-mode-isolation plan). While Review owns the turn the store refuses prose
-and `!` commands with a hint (the draft is preserved), slash commands stay
-available, and one `ReviewBar` below the TODO widget and above the composer
-carries the extension's own `workflow-review` line plus Pause/Resume/Abort. It
-reuses terminal Pi's text (including the command hints) and is the only review
-line: the generic working row is suppressed while it is visible, and the footer
-omits the promoted status. The handoff phase instead links to the review tab. Desktop hosts are launched
-with `PLANNOTATOR_BROWSER=none`, so a review opens in an app tab and never the
-system browser; the web tab's **Open in browser** button remains the escape
-hatch. Because colour alone is not an indicator, the mode is also named in the
-composer's top-right corner, exposed through `role="status"`. Every
-recognised mode has a label, including `Default`; Plan/Build/Review use the
-same `text-warn`/`text-accent`/`text-info` tone as the border, and Default uses
-the readable faint ink. The label renders at every
-window width — it used to be hidden below the `sm` breakpoint — and there is no
-duplicate `mode: …` chip in the footer (2026-10-31 minimal-session-ui).
+**The mode is named in the composer, and its label is the control (2026-11-22).**
+The session’s current mode comes from the generic contribution contract: a
+`kind: "mode"` contribution supplies the label/tone, and an optional `actionRef`
+names a same-owner top-level action that the label activates. Desktop renders
+that as `ComposerModeControl` in the prompt’s top-right corner — a real button
+whose accessible name is “<mode> — <action label>” — and never parses a status
+line or learns an extension name. A publisher without a reference keeps an
+informative, non-interactive label; another publisher’s mode is not consumed by
+this one.
 
+The visible mode follows **published state** only. A click or key activation
+sends `contributions.run`; an acknowledgement (`{ran:true}`, even with an error)
+is not proof of a transition, so the label changes when the next validated
+snapshot arrives, and nothing is retried automatically. A disabled reference
+(current mode, Review ownership, a missing command) stays visible with its
+reason. When the publisher also supplies same-owner `mode-choice` entries the
+label becomes a split control: its right-hand chevron opens an upward list with
+the current mode checked and disabled and the others selectable (the label still
+cycles on click). No choices means no chevron. There is no separate mode-switch
+row and no fallback mode strip when a dialog or docked TUI replaces the
+composer; task/review/handoff/recovery controls remain in the working bar.
+
+Pointer activation keeps the prompt’s focus, draft, selection and caret; Tab on
+the button is normal focus navigation, while Tab in the prompt still reaches a
+registered extension shortcut first (so a publisher’s cycle and its button agree
+by construction). The reserved right padding is measured, not fixed, so long and
+localized labels do not cover the first line of text.
 **The composer says where the cursor is (2026-10-21).** The textarea's caret
 carries the app's accent colour, and the composer's status row spells the
 position out (`Ln 2 · Col 7`) next to the shortcut hints. The offset is the one
@@ -548,9 +558,38 @@ The app treats failure as a first-class state rather than a silent no-op:
   with **Restart session**. Diagnostics shows the host build id and a
   `stale build` badge. The renderer's `commands.complete` fallback also converts
   a missing host method into a banner instead of an empty completion menu.
-- **Cancellation.** Abort/clear-queue already restore the queued text; closing a
-  tab mid-run stops its host through the supervisor (a test pins that no host is
-  left behind).
+- **Close is idempotent and startup cancellation is normal.** A session tab is
+  published with its real ID before the asynchronous create/activate lifecycle
+  has completed. Its yellow `starting` chip is therefore a real, intentionally
+  closable tab, not a placeholder; close removes it from the authoritative table
+  and stops its host. Concurrent/repeated close requests for a well-formed real
+  tab ID settle against the same close operation/current table. A lifecycle
+  continuation whose captured tab lifetime was explicitly retired returns
+  `cancelled: { reason: "tab-closed", tabId }` as data (with the current tab
+  envelope), rather than surfacing the host's expected `host_stopped` as a user
+  failure. Passive reads racing that retirement are cancelled only for IDs
+  proven recently closed and only for the allowlisted passive methods; unknown
+  IDs, unsupported methods, live-tab failures and mutations remain errors.
+  Renderer startup work checks cancellation/removal before issuing dependent
+  reads, so a late continuation cannot hydrate or recreate closed-tab state.
+  The real-Electron regression in `tests/e2e/session.spec.ts` gates extension
+  `session_start` on a test-owned loopback response, closes by one × gesture,
+  and checks both survivor selection and the Welcome fallback in one app launch.
+
+  **Diagnosis and limits.** The reproduced startup race confirms this chain:
+  the tab is published while creation is pending; the user's close intentionally
+  removes/stops it, draining shared create/activate work; continuations that do
+  not treat that retirement as cancellation can then issue stale reads or report
+  shutdown as a failure. This explains the fresh `session:create` / `session:activate`
+  `host_stopped` followed by a `session:request` for an unknown tab. It does not
+  establish the original reported `session:close` unknown-tab producer: that
+  exception proves the close arrived after its ID was absent from main's table,
+  but its particular earlier removal or caller sequence remains unproven. Do not
+  infer a double click, extension shutdown, corrupted session or spontaneous
+  host crash from that message. Any request-method attribution must come from
+  captured runtime evidence; the initial unlabelled request is not known to be
+  `messages.get`.
+
 - **Offline.** `isOfflineEnv` mirrors Pi's own `PI_OFFLINE` rule (`1`/`true`/
   `yes`); the value travels in `AppInfo.piOffline` and raises a persistent banner.
   Every user-visible catch path funnels through the store's `noteFailure`, which
@@ -609,11 +648,9 @@ The trust boundaries are declared in code and asserted by tests, not by prose:
   a reply — `providers.*` returns status summaries only — and no IPC channel is
   named for auth or credentials. The diagnostics bundle runs through
   `redactSecrets`.
-- **Telemetry.** Off by default. The supervisor spawns every host with
-  `PI_TELEMETRY=0` unless the user opts in on the first-run privacy screen
-  (`UiPrefs.telemetryEnabled`). Pi's own `isInstallTelemetryEnabled` prefers that
-  variable over the shared `settings.json`, so the guarantee holds without
-  rewriting the profile terminal Pi also reads.
+- **Telemetry.** Pi 1.7.0 removed its install telemetry and the `PI_TELEMETRY`
+  switch. The app no longer stores an install-telemetry preference or injects
+  that variable; the first-run screen is a local-data notice.
 - **Extension trust.** Extensions are not sandboxed — they run with the user's
   privileges, as in terminal Pi. The Extensions hub carries a **“What can
   extensions do?”** page that says so, next to the gates the app does provide
@@ -733,22 +770,29 @@ and the renderer all read it, so a budget change is one edit.
 - `tests/host/service.test.ts` — in-place event spilling and `host.metrics`.
 - `tests/renderer/transcript.test.tsx` — 10k virtualization and the lazy blob
   fetch.
-- `tests/shared/workflow-mode.test.ts` — the workflow status decoder: every
-  shipped label, ANSI-wrapped text, progress extraction, a label for every
-  recognised mode (including `Default`), and null-on-unknown degradation
-  (2026-10-19 UI rework).
+- `tests/shared/extension-contributions-view.test.ts` — the generic view model:
+  deterministic ordering, mode-only identity (progress/status never promoted),
+  same-owner `actionRef` resolution and refusal, and round-trip sanitization of
+  mode/input metadata.
 - `tests/styles-layering.test.ts` — the global stylesheet stays inside
   `@layer base` (an unlayered rule beats Tailwind's utilities), and the
-  `@source inline(...)` list matches every class `workflowBorderClass` returns.
+  `@source inline(...)` list matches every class `CONTRIBUTION_TONE_CLASSES`
+  returns.
 - `tests/renderer/session-footer.test.tsx` — the Pi-shaped session footer:
   pwd/branch and the token/cost/context line, `model • thinking`, the
   ANSI-coloured extension status line, and no `mode:` chip (the composer names
   the mode now).
 - `tests/renderer/composer.test.tsx` — Enter vs Shift+Enter, IME safety, the
   one-Send streaming model (Enter steers, Alt+Enter queues a follow-up), the hint
-  row, the `! shell` placeholder, the workflow mode border/badge (always visible,
-  announced, focus ring does not mask it), Tab dispatch to a registered extension
-  shortcut before completion, and no built-in completion menu on a shell line.
+  row, the `! shell` placeholder, and the mode control: tone-driven border, a
+  real button with `"<mode> — <action>"` as its name, disabled/pending state,
+  pointer activation that keeps the draft, and a legacy non-interactive label.
+  `mode-cycle-boundary.test.tsx` proves the same path from a published snapshot,
+  and `tests/host/contribution-mode-boundary.test.ts` proves the registry
+  refuses cross-owner/dangling/disabled references.
+- `tests/e2e/composer-mode-cycle.spec.ts` — real Electron geometry/keyboard:
+  click and Tab share the cycle, the draft/caret survive a click, focus is not
+  trapped, and the measured reservation covers the control at 200% zoom.
 - `tests/renderer/session-events.test.ts` — the reducer, including the
   hidden-item boundary: a `display: false` custom message is dropped (live and on
   reload), and the rule never keys on `customType`.
@@ -768,10 +812,10 @@ and the renderer all read it, so a budget change is one edit.
   validation and the `unsupported` answer without a workspace port.
 - `tests/packages/security.test.ts` — traversal-shaped npm sources are refused by
   both parsers, and the npm-root manifest only ever carries a plain name/version.
-- `tests/main/host-supervisor.test.ts` — every host gets `PI_TELEMETRY=0` unless
-  the user opted in, and the preference is read at each spawn (plan step 23).
+- `tests/main/host-supervisor.test.ts` — no host receives `PI_TELEMETRY`
+  (Pi 1.7.0 removed it).
 - `tests/renderer/privacy-dialog.test.tsx` — the first-run screen appears once,
-  defaults telemetry off, and only an explicit opt-in turns it on.
+  shows the local-data notice, and records the Continue acknowledgement.
 - `tests/renderer/extension-capabilities.test.tsx` — the extension trust page
   states the privilege model and the gates.
 - `tests/main/host-supervisor.test.ts` / `tests/main/session-service.test.ts` —
@@ -998,3 +1042,194 @@ renderer kept running but ignored every click (radix-ui/primitives#3317,
 - **One reconcile per focus burst.** Alt+Tab emits both `focus` and
   `visibilitychange`; `createFocusResync` coalesces the burst into one
   `sessions.reconcile()`.
+
+## The composer's revisioned draft (2026-11-22)
+
+The composer's text and image attachments are **tab state**, not component
+state. `src/renderer/src/session/composer-draft.ts` is the pure model and
+`useAppStore().composerDrafts[tabId]` holds one record per live tab.
+
+- **Attachments survive component replacement.** A docked extension dialog, a
+  composer remount or a pane move used to empty the locally owned image list.
+  The record now owns the attachment objects (bytes included) in renderer
+  memory, so a replacement composer renders the same chips; a successful send
+  clears them (`clearDraftImages`).
+- **Binary images never reach disk.** `prefs.drafts` stays the persisted,
+  sanitised text map; the attachment payload only lives in the renderer store.
+  Snapshots (`draftSnapshot`) carry id, name, mime type and byte count — never
+  the base64 data — so a later operation request or log line cannot leak it.
+- **Content revisions are monotonic.** Typing, a mention insertion, a host
+  `setEditorText`/restore, an attachment add/remove and a paste body registered
+  under an unchanged marker all mint the next `revision` from a process-wide
+  clock. Edit-then-revert therefore advances twice: a stale result cannot apply
+  because the text happens to match again. Writing identical content is a no-op.
+- **Selection is separate.** `setDraftSelection` records the caret/range and
+  never touches a revision; moving the caret must not invalidate an operation.
+  `attachmentRevision` changes only when the ordered attachment identity set
+  changes.
+- **One image, one identity.** `nextAttachmentId()` gives every attachment
+  instance its own id, so the same screenshot pasted twice is two chips that can
+  be removed separately; the existing size/mime/downscale limits are unchanged.
+- **Paste semantics are unchanged.** The marker stays in the text and the body
+  stays in `pasteBodies`; `draftSnapshot.expandedText` is the canonical text a
+  send would use. Prompt history, completion and caret behaviour are untouched —
+  the store's single text writer, `setDraft`, still goes through
+  `writeComposerDraft`.
+
+Closing a tab drops its record with the other tab-scoped caches
+(`TAB_SCOPED_RECORDS`). Tests: `tests/renderer/composer-draft.test.ts` (model),
+`tests/renderer/composer-draft-store.test.tsx` (store, remount, duplicates,
+close-tab cleanup, host-failure restore) and the existing composer/completion
+suites.
+
+### Atomic snapshot capture and CAS application (2026-11-22, row 19)
+
+`src/renderer/src/session/composer-draft-operation.ts` is the pure half of a
+composer operation; the store actions `applyDraftCandidate` and
+`replaceDraftWithCandidate` commit its result.
+
+- **The capture is the live draft.** `draftSnapshot` reads the revisioned record
+  and the tab's paste table, so `expandedText` is the canonical body a send
+  would use. The debounced `getEditorText()` mirror is never an operation input.
+  Attachment metadata stays id/name/mime/byte-count; the base64 payload stays in
+  renderer memory.
+- **One candidate, one current base.** An automatic apply passes the captured
+  `revision` + `attachmentRevision`; both are compared against the live record
+  immediately before the write. Typing, a host restore, an attachment
+  add/remove/reorder and an edit-then-revert (ABA) all advance one of them, so
+  the apply is refused as `stale-base` and the newer draft is left alone.
+- **Text and attachments move together.** A successful apply builds one new
+  draft record: the candidate text replaced, every live attachment object kept
+  by identity, a new monotonic revision, and the caret collapsed at the end of
+  the new text. The store writes `prefs.drafts` and `composerDrafts` in one
+  `set`, then flushes preferences immediately (coalescing the typing debounce)
+  and reports the new text to the host editor mirror.
+- **Explicit replace rechecks what the user saw.** After a conflict the
+  candidate stays recoverable; `replaceDraftWithCandidate` takes the revision
+  the confirm dialog displayed and re-checks it against the live draft, so an
+  edit made while the dialog was open still wins.
+- **Applications are idempotent.** Per-tab `composerApplyReceipts` (bounded,
+  newest last) record `{operationId, appliedRevision, disposition}`. A replayed
+  completion/apply for the same operation is refused as `duplicate` (or
+  `already-applied`) without a second write, flush or caret move. A successful
+  apply mints a `composerCaretRequests[tabId]` token that `Composer` honours
+  once, only when the DOM carries exactly the applied text.
+
+Tests: `tests/renderer/composer-draft-operation.test.ts` (pure CAS, receipt
+ledger) and `tests/renderer/composer-draft-apply.test.tsx` (store races, tab
+switch/close, explicit replace, duplicate apply, caret/focus).
+
+### Operation lifecycle across renderer/host boundaries (2026-11-22, row 23)
+
+A refinement is host work, but its observable state is per tab. The renderer
+never infers liveness from a label or a status string; it reconciles typed
+frames and host reads against an explicit binding generation.
+
+- **Reload/activation queries the live operation instead of restarting it.**
+  `composer.current` (additive in `composer-transform-v1`) answers with the one
+  non-terminal operation bound to the caller's session/epoch, or `null`. A
+  renderer that lost its in-memory record (renderer reload, HMR, a remount)
+  adopts it with an unknown base revision, so a later candidate is viewable but
+  is never auto-inserted over the reloaded draft; the user confirms an explicit
+  replace. `composer.transform` also refuses a second live operation for the
+  same binding (`request-conflict`), so a reload cannot start a duplicate
+  provider call.
+- **Every event is fenced.** The reducer compares an optional event `binding`
+  against the operation's captured session/epoch/binding/host generation, and
+  the store drops a frame whose live binding generation no longer matches the
+  record. Tab isolation comes from the per-tab IPC envelope, request ids are
+  host-minted and unguessable, and a response is re-read against the tab and
+  binding after every await.
+- **Applied-but-ack-lost is settled by receipts.** `composer.applied` is
+  idempotent on the host and replayed from a bounded settled map after a lost
+  acknowledgement; the renderer replays its own bounded receipt ledger once per
+  operation/revision. Neither path rewrites the draft a second time, and a
+  reconciliation read that reports `applied` settles the record without
+  candidate text.
+- **Invalidation, never a cached result.** Host restart/crash
+  (`session.recovered`), new/resume/fork/rewind (`session_replaced`), `/reload`,
+  a publisher withdraw/disable, a republished control generation, tab close, app
+  quit and a project trust/policy change all cancel the local operation and
+  invalidate the host job/grant. The candidate text stays viewable for recovery
+  but `canApply` is false; an already applied operation is never rolled back.
+  Renderer draft text and in-memory attachments are preserved whenever their
+  owner (the tab) still exists.
+- **Bounded cleanup.** The host keeps at most 64 settled request ids with a
+  60 s replay window (`composerTransformHostLimits`); `reset()` drops every job
+  and receipt on a restart/rebind, and `invalidate()` cancels jobs but keeps
+  bounded receipts. The renderer keeps one record per tab, a bounded applied
+  receipt ledger per tab, and a bounded (64-entry) receipt-replay memory; a
+  closed tab's operation/receipt/attachment records are dropped while
+  `prefs.drafts` keeps the persisted text.
+
+**Binary attachments do not survive a full app/renderer process loss.** Image
+bytes live only in renderer memory (`composerDrafts[tabId].attachments`); the
+persisted `prefs.drafts` map carries sanitised text only. Restarting the app or
+reloading the renderer therefore restores the text but not the attached images;
+a matching operation's candidate can still be reconciled from the host, but the
+original attachments are gone. Surviving them would require a separate secure
+draft-blob store (encrypted at rest, bounded, owner-scoped); this build
+deliberately has none, so the limitation is stated rather than implied.
+
+Tests: `tests/shared/composer-operation-lifecycle.test.ts` (fencing,
+reconcile/adopt/expire, receipt idempotence, invalidation-as-cancellation),
+`tests/host/composer-transform.test.ts` (current read, single live operation,
+invalidate/reset/dispose, bounded retention) and
+`tests/renderer/composer-operation-lifecycle.test.tsx` (reload adoption, host
+loss, receipt replay, publisher/trust/replacement cancellation, closed-tab
+cleanup).
+
+## One working bar and the footer telemetry rail (2026-11-25)
+
+The session column used to carry two native extension rows: `WorkingRow` (the
+working status + `Esc to cancel`) and `ContributionsBar` (progress/status rows,
+the input state, the linked tab and the first four actions). Review suppressed
+the first one, so the same job had two shapes. They are merged into a single
+`src/renderer/src/session/WorkingBar.tsx`, mounted once immediately above the
+composer (after the above/below-editor widget strips and `RelatedSessionsBar`),
+in every pane:
+
+- **One row, one place.** It shows the extension working message (the default
+  `Working…` + `Esc to cancel` only when the publisher sent no message), the
+  elapsed time, a compact linked-tab button, the publisher's inline controls, a
+  lock marker for a `locked` input contribution, and a `MoreVertical` three-dot
+  menu for grouped/overflow actions. It hides only when none of that exists, and
+  it is not suppressed while input is locked, so Review keeps it. It is not
+  mounted on `stopped`/`crashed`/`failed` tabs (a dead host cannot run an
+  action). `RunStatusRow` remains a separate transient retry/compaction row.
+- **The publisher declares placement.** An action may carry a `group`
+  (`id`/`label`/`order`/`placement` of `inline` or `menu`); ungrouped legacy
+  actions keep the old fallback (first three inline, the rest in the menu). The
+  pure `buildContributionBar()` model decides `inlineActions`, `actionGroups`
+  and `overflowActions` once, and the renderer never re-derives owner rules.
+- **The footer is the telemetry rail.** `status`/`progress` contribution rows
+  moved out of the bar into `SessionFooter`, after the `ctx.ui.setStatus`
+  entries, tone-aware, with `done/total` and the stale marker. The rail grows
+  within `min-h-10 max-h-24` and wraps (`max-w-[72ch]`,
+  `whitespace-pre-wrap`; ANSI statuses pass `AnsiLine`'s opt-in `wrap`), so the
+  child telemetry is readable instead of truncated at 48ch. A custom
+  `ctx.ui.setFooter()` still replaces the whole footer, so the rows are not
+  injected into it.
+- **The TODO panel is untouched.** The extension's own `workflow-todos` widget
+  stays a read-only TUI frame with its own `Child x/x · model · ctx · local
+todos` header; the app adds no progress row and no `Todos n/m` chip above the
+  composer. An idle bar with menu-only actions shows the first group's label
+  (`Todos`) next to the dots.
+- **The mode label is a split control.** A same-owner `mode-choice` list adds a
+  chevron that opens an upward menu (`menuitemradio`, current mode checked and
+  disabled); `mode-choice` has its own slot so it can never become the composer's
+  identity. The whole control is measured, so the textarea clears label and
+  chevron.
+
+Nothing here knows an extension name: the guard
+`tests/architecture/no-workflow-adapters.test.ts` still passes, the contract
+stays additive v1, and the publisher that supplies groups/choices is
+`@dieulc/workflow` 0.15.0 — the staged/pinned bundle in
+`resources/workflow.lock.json` is also 0.15.0, so grouped actions and the mode
+chevron are active in the pinned desktop. The live `/profile use` model switch
+is in unreleased W 0.17.2 work and is not in the pinned 0.15.0 bundle. Tests: `tests/renderer/working-bar.test.tsx`,
+`tests/renderer/session-footer.test.tsx`, `tests/renderer/composer.test.tsx`,
+`tests/renderer/session-view.test.tsx`,
+`tests/shared/extension-contributions-view.test.ts` and
+`docs/architecture/extension-ui.md` (“One working bar, grouped actions and the
+mode menu”).

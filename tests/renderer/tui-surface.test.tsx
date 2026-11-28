@@ -491,3 +491,41 @@ describe("TuiSlotFrame", () => {
     expect(document.querySelector("[data-tui-slot]")).toBeTruthy();
   });
 });
+
+describe("pane focus ownership (row 28)", () => {
+  it("does not autofocus or report keyboard ownership for a background pane's surface", () => {
+    const setFocus = vi.spyOn(window.pi!.tui!, "setFocus").mockImplementation(() => undefined);
+    const outside = document.createElement("input");
+    document.body.appendChild(outside);
+    outside.focus();
+
+    render(
+      <TuiSurface
+        tabId={TAB}
+        snapshot={customFrame()}
+        cell={CELL}
+        grid={GRID}
+        variant="dock"
+        active={false}
+      />,
+    );
+    expect(document.activeElement).toBe(outside);
+    expect(setFocus).not.toHaveBeenCalledWith(TAB, true);
+    outside.remove();
+  });
+
+  it("focuses the surface when its pane is the focused one", () => {
+    const { container } = render(
+      <TuiSurface
+        tabId={TAB}
+        snapshot={customFrame()}
+        cell={CELL}
+        grid={GRID}
+        variant="dock"
+        active
+      />,
+    );
+    const surface = container.querySelector("[data-tui-surface='dock']");
+    expect(document.activeElement).toBe(surface);
+  });
+});

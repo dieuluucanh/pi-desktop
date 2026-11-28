@@ -20,14 +20,73 @@ is declared but not yet wired answers
 it** in the message — see “Implementation status” below, which is the current
 truth and supersedes the group table's implications.
 
-| Group         | Methods                                                                                                                                                                                                                   |
-| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| transport     | `host.hello`, `host.ping`, `host.shutdown`, `host.blobs.read`, `host.metrics`                                                                                                                                             |
-| sessions      | `session.create/open/list/resume/fork/clone/delete/rename/exportHtml`                                                                                                                                                     |
-| conversation  | `prompt`, `steer`, `followUp`, `abort`, `clearQueue`                                                                                                                                                                      |
-| state         | `state.get`, `messages.get`, `entries.get`, `tree.get`, `stats.get`, `compact`, `commands.list`, `tools.*`, `model.*`, `thinking.*`                                                                                       |
-| configuration | `settings.*`, `providers.*`, `packages.*`                                                                                                                                                                                 |
-| other         | `oi.respond` (extension UI answers), `oi.state`, `oi.editorText`, `completion.suggest`, `completion.apply` (extension UI + composer bridge), `tui.state`, `tui.resize`, `tui.input` (extension TUI surface), `files.list` |
+| Group               | Methods                                                                                                                                                                                                                                                                                                         |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| transport           | `host.hello`, `host.ping`, `host.shutdown`, `host.blobs.read`, `host.metrics`                                                                                                                                                                                                                                   |
+| sessions            | `session.create/open/list/resume/fork/clone/delete/rename/exportHtml`                                                                                                                                                                                                                                           |
+| conversation        | `prompt`, `steer`, `followUp`, `abort`, `clearQueue`                                                                                                                                                                                                                                                            |
+| state               | `state.get`, `messages.get`, `entries.get`, `tree.get`, `stats.get`, `compact`, `commands.list`, `tools.*`, `model.*`, `thinking.*`                                                                                                                                                                             |
+| configuration       | `settings.*`, `providers.*`, `packages.*`                                                                                                                                                                                                                                                                       |
+| other               | `oi.respond`, `oi.state`, `oi.editorText`, `completion.suggest`, `completion.apply`, `tui.state`, `tui.resize`, `tui.input`, `files.list`, `text.models`, `text.generate`, `text.cancel` (control host)                                                                                                         |
+| private attachments | `attachments.transfer.begin/chunk/seal/cancel`, `attachments.plan`, `attachments.prompt`, `attachments.submissions.list`, `attachments.context`, `attachments.image.begin/chunk/prepare/read/cancel`, `attachments.readiness` (parent-only; main pins and the private-method allowlist block renderer requests) |
+
+### Reference-based attachments (private transport)
+
+The private transfer, planning, dispatch and image-preparation handlers exist,
+but the renderer cannot call them: main accepts these methods only through a
+generation-bound `SessionHostPin`, and generic renderer `session.request`
+rejects them. Main stages a bounded lease in ordered chunks; the host verifies
+the staged bytes, plans against its live model/context, materializes only
+approved text/image representations, and dispatches through Pi's public SDK.
+`attachments.prompt` uses the shared versioned request contract plus a
+host-owned plan and transfer binding.
+
+The greeting advertises the attachment protocol version the host actually
+implements (its attachment handlers and ports), never a hard-coded capability.
+Main treats the greeting strictly: a missing, older, newer or malformed version
+is refused before any preparation or staging, with no legacy fallback. Product
+availability is a separate, trusted main-process gate (`PI_DESKTOP_ATTACHMENTS`
+for development/tests; packaged builds stay off until the milestone-A gate), so
+protocol support never implies the feature is enabled in a build.
+
+Readiness is a metadata-only, non-submitting pass: main sends descriptor bytes
+and dimensions (never content), and the host evaluates them with the same
+policy used for delivery planning against its live model/context/history. It
+returns per-file and aggregate reasons plus the model and context revision; it
+stages nothing and never creates a dispatch attempt. The renderer debounces it
+and discards stale answers, and a readiness result is not send authority.
+
+Image originals follow a separate, narrower channel. `attachments.image.*`
+stages one owner-checked original snapshot, runs Pi's public image preparation
+(`createSdkImageEncoder` behind `prepareRasterImage`) in the host, and lets main
+pull the prepared representation plus a bounded thumbnail back in chunks. Main
+re-inspects and re-hashes every returned byte before persisting its own
+immutable representation, so the host is a decoder endpoint, not an authority.
+Generic `prompt.images` and direct image/file fields on `steer`/`followUp`
+remain rejected; ordinary image input only travels the managed path.
+
+Delivery uses the public SDK `session.prompt` with native image preprocessing
+and trusted extension behavior. There is no provider allowlist, hook refusal or
+prompt replacement. `accepted` means Pi preflight acceptance plus a durable
+SessionManager association; it is not proof that a provider retained or read
+the image. Known `images.blockImages` settings still block. Capability
+negotiation and the milestone-A release gate are tracked separately, so a host
+whose `attachmentDeliveryVersion` is `null` must not be treated as supporting
+delivery.
+
+Main keeps the durable side of a send in its own profile store, not in the
+renderer or the session JSONL: a bounded submission journal (never source text,
+bytes or paths) records dispatch/terminal state, accepted originals and
+representations are promoted to profile-scoped session/branch owners, and a
+30-day tombstone keeps a deleted session's copies recoverable. The journal
+retires only terminal, ownership-reconciled attempts; unresolved or
+protected-capacity records block a send with `storage_full` rather than evicting
+evidence. `attachments.storage`/`attachments.clearStorage` expose bounded
+usage and an explicit reclamation action; `attachments.exportBundle` /
+`attachments.importBundle` are local-only, validate a versioned zip and never
+treat manifest ids or paths as permissions. `/share`, `/bug` and the sanitized
+export use one attachment-private projection; native HTML/JSONL exports remain
+truthful and are gated by a content confirmation.
 
 ## Framing rules
 

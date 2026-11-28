@@ -17,3 +17,6 @@ site
 # Brand assets stay byte-stable: re-deriving a mark must be the only thing that
 # changes them, never a formatter run.
 assets
+# The composer-transform conformance fixture is copied verbatim from Workflow and
+# pinned by SHA256 in both repos; reformatting it would break that equality.
+tests/shared/fixtures/composer-transform.conformance.json

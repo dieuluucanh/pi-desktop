@@ -346,9 +346,14 @@ function ResourceRow({
       <div className="flex items-center justify-between gap-3">
         <div className="flex min-w-0 flex-wrap items-center gap-1.5">
           <span className="truncate text-xs font-medium text-ink">{resource.name}</span>
+          {resource.builtin ? (
+            <Badge tone="accent">
+              built-in{resource.builtin.version ? ` ${resource.builtin.version}` : ""}
+            </Badge>
+          ) : null}
           <Badge tone="neutral">{resource.scope}</Badge>
           <Badge tone="neutral">{resource.origin}</Badge>
-          {resource.source && resource.source !== "unknown" ? (
+          {resource.source && resource.source !== "unknown" && !resource.builtin ? (
             <span className="truncate font-mono text-[10px] text-ink-faint">{resource.source}</span>
           ) : null}
           {!resource.enabled ? <Badge tone="warn">disabled</Badge> : null}

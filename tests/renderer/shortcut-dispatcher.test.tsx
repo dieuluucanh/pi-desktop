@@ -337,3 +337,52 @@ describe("ShortcutDispatcher app.interrupt (plan step 24)", () => {
     expect(interrupt).not.toHaveBeenCalled();
   });
 });
+
+describe("ShortcutDispatcher plain Tab on an interactive control", () => {
+  const tabShortcut = { key: "tab", extensionPath: "C:/x/ext", source: "ext" };
+
+  function button(): HTMLButtonElement {
+    const element = document.createElement("button");
+    element.textContent = "Mode";
+    document.body.appendChild(element);
+    return element;
+  }
+
+  it("does not swallow focus navigation when a button has focus", () => {
+    const invoke = vi.fn(async () => true);
+    useAppStore.setState({
+      invokeShortcut: invoke,
+      shortcuts: { shortcuts: [tabShortcut] } as never,
+    });
+    render(<ShortcutDispatcher />);
+    const element = button();
+    element.focus();
+    const event = new KeyboardEvent("keydown", {
+      key: "Tab",
+      bubbles: true,
+      cancelable: true,
+    });
+    element.dispatchEvent(event);
+    // Native Tab must move focus; the extension's `tab` action must not run.
+    expect(event.defaultPrevented).toBe(false);
+    expect(invoke).not.toHaveBeenCalled();
+    element.remove();
+  });
+
+  it("still dispatches Tab from the page/composer (where the cycle applies)", () => {
+    const invoke = vi.fn(async () => true);
+    useAppStore.setState({
+      invokeShortcut: invoke,
+      shortcuts: { shortcuts: [tabShortcut] } as never,
+    });
+    render(<ShortcutDispatcher />);
+    const event = new KeyboardEvent("keydown", {
+      key: "Tab",
+      bubbles: true,
+      cancelable: true,
+    });
+    document.body.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(true);
+    expect(invoke).toHaveBeenCalledWith("tab");
+  });
+});

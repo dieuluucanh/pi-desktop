@@ -432,7 +432,7 @@ describe("host integration: extension command arguments", () => {
 
 describe("host integration: Escape consumption (plan step 25)", () => {
   /**
-   * The end-to-end contract behind review-pause parity: the renderer's Escape
+   * The end-to-end contract behind review pause parity: the renderer's Escape
    * reaches the host as `tui.input`, an extension's `onTerminalInput` claims it,
    * and the host reports `consumed: true` so the renderer does not also abort.
    */

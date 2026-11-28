@@ -4,6 +4,8 @@ import {
   isHostBackedTab,
   isSessionBusyState,
   isSessionTab,
+  isTabClosedCancellation,
+  isPassiveSessionMethod,
   isTabKind,
   sanitizeTabRecord,
   sanitizeTabs,
@@ -18,6 +20,24 @@ import {
  * what stop a hand-edited `app-state.json` from producing an unusable tab — a
  * web tab with no permitted URL, or a host-backed tab with no folder.
  */
+
+describe("session cancellation", () => {
+  it("recognizes only the explicit tab-closed data discriminator", () => {
+    expect(isTabClosedCancellation({ cancelled: { reason: "tab-closed", tabId: "tab-1" } })).toBe(
+      true,
+    );
+    expect(isTabClosedCancellation({ cancelled: { reason: "tab-closed", tabId: "" } })).toBe(false);
+    expect(isTabClosedCancellation({ cancelled: { reason: "unknown-tab", tabId: "tab-1" } })).toBe(
+      false,
+    );
+    expect(isTabClosedCancellation(new Error("tab closed"))).toBe(false);
+  });
+
+  it("exposes the centralized passive-method classification", () => {
+    expect(isPassiveSessionMethod("messages.get")).toBe(true);
+    expect(isPassiveSessionMethod("prompt")).toBe(false);
+  });
+});
 
 describe("tab kinds", () => {
   it("knows session, office, web, editor and terminal", () => {

@@ -21,6 +21,7 @@ import type {
   ProviderDescriptor,
   ProviderSummary,
 } from "../shared/providers";
+import type { ModelChoice } from "../shared/text-generation";
 import type { HostHandler } from "./service";
 
 // The wire shapes live in `src/shared/providers.ts` so the renderer can import
@@ -33,6 +34,31 @@ export type {
   ProviderDescriptor,
   ProviderSummary,
 } from "../shared/providers";
+
+/**
+ * One session-less completion (2026-11-25 plan, step 16).
+ *
+ * Structural on purpose: `src/host/sdk/providers.ts` maps this onto
+ * `ModelRuntime.completeSimple`, so no SDK type crosses this boundary and the
+ * handlers stay unit-testable with a fake port.
+ */
+export interface ModelCompletionInput {
+  model: { provider: string; id: string };
+  system: string;
+  prompt: string;
+  maxTokens: number;
+  signal: AbortSignal;
+}
+
+/** The one-shot generation surface, implemented by `src/host/sdk/*`. */
+export interface ModelCompletionPort {
+  /** Models the picker may offer; awaits Pi's auth/availability pass. */
+  availableModels(): Promise<readonly ModelChoice[]>;
+  /** One complete (non-streamed) reply, or a `ProviderError`. */
+  complete(
+    input: ModelCompletionInput,
+  ): Promise<{ text: string; usage?: { input: number; output: number } }>;
+}
 
 /** The credential surface, implemented by `src/host/sdk/*` against `ModelRuntime`. */
 export interface ProviderPort {
@@ -54,6 +80,12 @@ export interface ProviderPort {
   refresh(): Promise<void>;
   /** Runs Pi's own OAuth flow; progress goes through `interaction.notify`. */
   loginOAuth?(providerId: string, interaction: ProviderAuthInteraction): Promise<void>;
+  /**
+   * Session-less one-shot generation over the same lazy `ModelRuntime` (plan
+   * step 16). Optional: a host without it answers `text.*` with
+   * `not_implemented` instead of pretending it can generate.
+   */
+  completion?: ModelCompletionPort;
   /** Environment lookup for `envVars`, injected so tests need no real env. */
   envHas?(name: string): boolean;
 }

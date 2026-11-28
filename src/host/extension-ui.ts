@@ -53,8 +53,12 @@ export interface UiResponse {
 }
 
 export interface ExtensionUiBridge {
-  /** Registers a request, emits `oi.request`, resolves on `oi.respond`. */
-  request(method: string, params?: unknown): Promise<unknown>;
+  /**
+   * Registers a request, emits `oi.request`, resolves on `oi.respond`.
+   * `onId` receives the minted id synchronously so a caller that can retract the
+   * visible dialog (`opts.signal`) knows what to cancel.
+   */
+  request(method: string, params?: unknown, onId?: (id: string) => void): Promise<unknown>;
   /** Outstanding request ids (diagnostics and tests). */
   pendingIds(): string[];
   /** Rejects every pending request, e.g. when its session goes away. */
@@ -95,6 +99,11 @@ export function createExtensionUiBridge(options: ExtensionUiOptions): ExtensionU
   const newId = options.newId ?? ((): string => randomUUID());
   const timeoutMs = options.timeoutMs ?? DEFAULT_UI_TIMEOUT_MS;
 
+  const cancel = (id: string): void => {
+    // A dialog may already be gone in the renderer; the event is idempotent.
+    options.emit("oi.cancel", { id });
+  };
+
   const settle = (id: string): Deferred | undefined => {
     const entry = pending.get(id);
     if (!entry) return undefined;
@@ -104,7 +113,7 @@ export function createExtensionUiBridge(options: ExtensionUiOptions): ExtensionU
   };
 
   return {
-    request(method, params) {
+    request(method, params, onId) {
       const id = newId();
       return new Promise<unknown>((resolve, reject) => {
         const timer = setTimeout(() => {
@@ -114,6 +123,7 @@ export function createExtensionUiBridge(options: ExtensionUiOptions): ExtensionU
         }, timeoutMs);
         if (typeof timer === "object" && timer && "unref" in timer) timer.unref();
         pending.set(id, { resolve, reject, timer });
+        onId?.(id);
         options.emit("oi.request", { id, method, params });
       });
     },
@@ -122,6 +132,9 @@ export function createExtensionUiBridge(options: ExtensionUiOptions): ExtensionU
 
     dispose(reason) {
       for (const id of [...pending.keys()]) {
+        // The renderer must not keep a dialog the extension can no longer hear:
+        // retract it in the same step that rejects the host promise.
+        cancel(id);
         settle(id)?.reject(new Error(reason));
       }
     },
@@ -180,6 +193,13 @@ export type ExtensionTerminalInputHandler = (
 export interface ExtensionUiPortOptions {
   emit(event: string, payload?: unknown): void;
   newId?: () => string;
+  /**
+   * Mints the composer "binding" id stamped on every editor command (plan step
+   * 17). The renderer fences sequence numbers per binding, so a rebound host's
+   * sequence restart cannot be mistaken for a stale repeat. Defaults to a random
+   * UUID per port and per rebind.
+   */
+  newBindingId?: () => string;
   timeoutMs?: number;
   now?: () => number;
 }
@@ -249,8 +269,12 @@ export interface ExtensionUiPort {
   dispose(reason: string): void;
 }
 
-function editorCommandFrom(seq: number, text: string): { seq: number; text: string } {
-  return { seq, text };
+function editorCommandFrom(
+  seq: number,
+  text: string,
+  binding: string,
+): { seq: number; text: string; binding: string } {
+  return { seq, text, binding };
 }
 
 export function createExtensionUiPort(options: ExtensionUiPortOptions): ExtensionUiPort {
@@ -276,6 +300,7 @@ export function createExtensionUiPort(options: ExtensionUiPortOptions): Extensio
   let toolsExpanded: boolean | null = null;
   let editorText = "";
   let editorSeq = 0;
+  let editorBinding = (options.newBindingId ?? ((): string => `extui-${randomUUID()}`))();
   let editorCommand: ExtensionUiSnapshot["editor"] = null;
   let footerFactory: ExtensionTuiFactory | undefined;
   let headerFactory: ExtensionTuiFactory | undefined;
@@ -307,13 +332,25 @@ export function createExtensionUiPort(options: ExtensionUiPortOptions): Extensio
     defaultValue: unknown,
   ): Promise<unknown> => {
     if (opts?.signal?.aborted) return Promise.resolve(defaultValue);
-    const request = bridge.request(method, {
-      ...params,
-      ...(opts?.timeout === undefined ? {} : { timeout: opts.timeout }),
-    });
+    let requestId: string | null = null;
+    const request = bridge.request(
+      method,
+      {
+        ...params,
+        ...(opts?.timeout === undefined ? {} : { timeout: opts.timeout }),
+      },
+      (id) => {
+        requestId = id;
+      },
+    );
     if (!opts?.signal) return request;
     return new Promise((resolve, reject) => {
-      const onAbort = (): void => resolve(defaultValue);
+      const onAbort = (): void => {
+        // Retract the visible dialog too: the extension no longer waits for it,
+        // so it must not stay on screen until the store timeout (row 28).
+        if (requestId) options.emit("oi.cancel", { id: requestId });
+        resolve(defaultValue);
+      };
       opts.signal?.addEventListener("abort", onAbort, { once: true });
       request.then(
         (value) => {
@@ -423,12 +460,15 @@ export function createExtensionUiPort(options: ExtensionUiPortOptions): Extensio
 
     pasteToEditor(text) {
       editorText = `${editorText}${text}`;
-      editorCommand = editorCommandFrom(++editorSeq, editorText);
+      editorCommand = editorCommandFrom(++editorSeq, editorText, editorBinding);
       pushState();
     },
     setEditorText(text) {
+      // Deliberately unconditional: `ctx.ui.setEditorText` is documented as a
+      // plain buffer write for every extension. Fencing lives on the renderer's
+      // side (binding + sequence), never in this write itself (plan step 17).
       editorText = text;
-      editorCommand = editorCommandFrom(++editorSeq, editorText);
+      editorCommand = editorCommandFrom(++editorSeq, editorText, editorBinding);
       pushState();
     },
     getEditorText: () => editorText,
@@ -478,7 +518,13 @@ export function createExtensionUiPort(options: ExtensionUiPortOptions): Extensio
       terminalInput.clear();
       providers.length = 0;
       // `toolsExpanded` is app-owned (Ctrl+O) and `editorText` is the renderer's
-      // draft mirror; neither belongs to the outgoing extension session.
+      // draft mirror; neither belongs to the outgoing extension session. The
+      // *pending* editor command does: replaying it into the replacement session
+      // would overwrite a newer draft, so the rebind supersedes it and mints a
+      // new binding with a fresh sequence (plan step 17).
+      editorBinding = (options.newBindingId ?? ((): string => `extui-${randomUUID()}`))();
+      editorSeq = 0;
+      editorCommand = null;
       pushState();
     },
 
@@ -503,8 +549,34 @@ export function createExtensionUiPort(options: ExtensionUiPortOptions): Extensio
       "oi.editorText": (params) => {
         const record =
           params && typeof params === "object" ? (params as Record<string, unknown>) : {};
-        if (typeof record.text === "string") editorText = record.text;
+        if (typeof record.text === "string") {
+          editorText = record.text;
+          // The mirror is the composer's truth. A pending command that no longer
+          // matches it was overwritten by the user (or belongs to an older
+          // renderer draft), so keeping it would replay stale text on the next
+          // state frame. The mirror itself is never rolled back (plan step 17).
+          if (editorCommand !== null && editorCommand.text !== editorText) {
+            editorCommand = null;
+          }
+        }
         return { ok: true };
+      },
+      "oi.editorConsumed": (params) => {
+        // The renderer consumed one command (applied it, or recognised it as a
+        // repeat). Clearing it makes delivery strictly one-shot: a reconnected
+        // or reloaded renderer cannot be handed the same edit again. A mismatched
+        // ack is a no-op so a late ack cannot drop a newer command.
+        const record =
+          params && typeof params === "object" ? (params as Record<string, unknown>) : {};
+        const binding = typeof record.binding === "string" ? record.binding : null;
+        const seq = typeof record.seq === "number" ? record.seq : null;
+        const matches =
+          editorCommand !== null &&
+          seq !== null &&
+          editorCommand.seq === seq &&
+          (binding === null || editorCommand.binding === binding);
+        if (matches) editorCommand = null;
+        return { ok: true, cleared: matches };
       },
       "completion.suggest": async (params) => {
         const request = sanitizeCompletionRequest(params);

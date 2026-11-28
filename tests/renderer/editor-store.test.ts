@@ -88,7 +88,7 @@ async function seed(writeFile: ReturnType<typeof vi.fn>): Promise<void> {
 
 beforeEach(() => {
   useEditorStore.getState().clearExcept(new Set());
-  useEditorStore.setState({ pendingClose: null });
+  useEditorStore.setState({ pendingClose: null, wrapOverride: {} });
   useAppStore.setState({ tabs: [], activeTabId: null, hint: null });
 });
 
@@ -230,6 +230,51 @@ describe("editor tab retargeting and pruning", () => {
     expect(useEditorStore.getState().meta["editor-1"]).toBeDefined();
     expect(useEditorStore.getState().meta["editor-2"]).toBeUndefined();
     expect(deleteBackup).toHaveBeenCalledWith("editor-2");
+  });
+});
+
+describe("per-tab wrap override", () => {
+  it("drops the wrap override for a discarded tab and keeps the others", async () => {
+    const { bridge } = installBridge();
+    (bridge.workspace as unknown as { deleteBackup: unknown }).deleteBackup = vi.fn(async () => ({
+      ok: true as const,
+      value: true,
+    }));
+    const store = useEditorStore.getState();
+    store.setWrapOverride("editor-1", true);
+    store.setWrapOverride("editor-2", false);
+
+    await useEditorStore.getState().discard("editor-1");
+
+    expect(useEditorStore.getState().wrapOverride).toEqual({ "editor-2": false });
+  });
+
+  it("clears the key on null so the tab follows the prefs again", () => {
+    const store = useEditorStore.getState();
+    store.setWrapOverride("editor-1", true);
+
+    useEditorStore.getState().setWrapOverride("editor-1", null);
+
+    expect(useEditorStore.getState().wrapOverride).toEqual({});
+  });
+
+  it("prunes overrides for tabs that are gone, with or without metadata", async () => {
+    const { bridge } = installBridge();
+    (bridge.workspace as unknown as { deleteBackup: unknown }).deleteBackup = vi.fn(async () => ({
+      ok: true as const,
+      value: true,
+    }));
+    useEditorStore.setState({
+      meta: { "editor-2": meta("editor-2", "b.ts") },
+      wrapOverride: { "editor-1": true, "editor-2": false },
+    });
+
+    // editor-1 has a wrap override but never loaded (no metadata); editor-2 has
+    // metadata plus an override and is kept.
+    await useEditorStore.getState().prune(new Set(["editor-2"]));
+
+    expect(useEditorStore.getState().wrapOverride).toEqual({ "editor-2": false });
+    expect(useEditorStore.getState().meta["editor-2"]).toBeDefined();
   });
 });
 

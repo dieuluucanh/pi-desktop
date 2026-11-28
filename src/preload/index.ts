@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer, type IpcRendererEvent } from "electron";
 import {
   IPC,
   type AppInfo,
+  type AttachmentsBridge,
   type DiagnosticsBridge,
   type IntegrationsBridge,
   type MenuCommand,
@@ -23,6 +24,25 @@ import {
   type WindowState,
 } from "../shared/ipc";
 import type { UiPrefs } from "../shared/prefs";
+import type {
+  AttachmentDeliveryRequest,
+  AttachmentDraftGrant,
+  AttachmentImportGrant,
+  AttachmentImportRequest,
+  AttachmentPickResult,
+  AttachmentPromptResult,
+  AttachmentDescriptor,
+  AttachmentPreview,
+  AttachmentReadiness,
+  AttachmentReadinessRequest,
+  AttachmentSnapshot,
+  AttachmentStatusRequest,
+  AttachmentSubmissionStatus,
+} from "../shared/attachments";
+import type {
+  AttachmentRetentionClearReport,
+  AttachmentStorageReport,
+} from "../shared/attachment-storage";
 import type { TerminalBridge, TerminalCreateInput } from "../shared/terminal-ipc";
 import type {
   TerminalAttachResult,
@@ -85,6 +105,7 @@ import type {
 import type {
   GitAction,
   GitActionResult,
+  GitCommitContext,
   GitCommitEntry,
   GitDiff,
   GitDiffRequest,
@@ -111,6 +132,55 @@ function subscribe<T>(channel: string, listener: (payload: T) => void): () => vo
     ipcRenderer.removeListener(channel, handler);
   };
 }
+
+const attachments: AttachmentsBridge = {
+  openDraft: (tabId, draftId) =>
+    ipcRenderer.invoke(IPC.attachmentsOpenDraft, tabId, draftId) as Promise<AttachmentDraftGrant>,
+  closeDraft: (draft) => ipcRenderer.invoke(IPC.attachmentsCloseDraft, draft) as Promise<void>,
+  pick: (draft) =>
+    ipcRenderer.invoke(IPC.attachmentsPick, draft) as Promise<
+      readonly AttachmentPickResult[] | null
+    >,
+  begin: (input: AttachmentImportRequest) =>
+    ipcRenderer.invoke(IPC.attachmentsBegin, input) as Promise<AttachmentImportGrant>,
+  append: (draft, token, offset, bytes) =>
+    ipcRenderer.invoke(IPC.attachmentsAppend, draft, token, offset, bytes) as Promise<number>,
+  commit: (draft, token) =>
+    ipcRenderer.invoke(IPC.attachmentsCommit, draft, token) as Promise<AttachmentSnapshot>,
+  cancel: (draft, token) =>
+    ipcRenderer.invoke(IPC.attachmentsCancel, draft, token) as Promise<void>,
+  list: (draft) =>
+    ipcRenderer.invoke(IPC.attachmentsList, draft) as Promise<readonly AttachmentDescriptor[]>,
+  preview: (draft, id, maxBytes) =>
+    ipcRenderer.invoke(IPC.attachmentsPreview, draft, id, maxBytes) as Promise<AttachmentPreview>,
+  remove: (draft, id) => ipcRenderer.invoke(IPC.attachmentsRemove, draft, id) as Promise<void>,
+  submit: (input: AttachmentDeliveryRequest) =>
+    ipcRenderer.invoke(IPC.attachmentsSubmit, input) as Promise<AttachmentPromptResult>,
+  status: (input: AttachmentStatusRequest) =>
+    ipcRenderer.invoke(IPC.attachmentsStatus, input) as Promise<AttachmentSubmissionStatus>,
+  readiness: (input: AttachmentReadinessRequest) =>
+    ipcRenderer.invoke(IPC.attachmentsReadiness, input) as Promise<AttachmentReadiness>,
+  storage: () =>
+    ipcRenderer.invoke(IPC.attachmentsStorage) as Promise<AttachmentStorageReport | null>,
+  clearStorage: () =>
+    ipcRenderer.invoke(IPC.attachmentsClearStorage) as Promise<AttachmentRetentionClearReport>,
+  exportBundle: (input) =>
+    ipcRenderer.invoke(IPC.attachmentsExportBundle, input) as Promise<{
+      ok: boolean;
+      path?: string;
+      assets?: number;
+      objects?: number;
+      error?: string;
+    }>,
+  importBundle: (input) =>
+    ipcRenderer.invoke(IPC.attachmentsImportBundle, input) as Promise<{
+      ok: boolean;
+      path?: string;
+      originals?: number;
+      representations?: number;
+      error?: string;
+    }>,
+};
 
 const sessions: SessionsBridge = {
   list: () => ipcRenderer.invoke(IPC.sessionTabs) as Promise<SessionTabsEnvelope>,
@@ -269,6 +339,8 @@ const git: GitBridge = {
     ipcRenderer.invoke(IPC.gitHeadMessage, projectPath) as Promise<string | null>,
   branches: (projectPath: string) =>
     ipcRenderer.invoke(IPC.gitBranches, projectPath) as Promise<string[]>,
+  commitContext: (projectPath: string) =>
+    ipcRenderer.invoke(IPC.gitCommitContext, projectPath) as Promise<GitCommitContext>,
   onSnapshot: (listener: (snapshot: GitSnapshot) => void) =>
     subscribe<GitSnapshot>(IPC.gitPushed, listener),
 };
@@ -408,6 +480,14 @@ const bridge: PiDesktopBridge = {
         bytes?: number;
         error?: string;
       }>,
+    exportSanitized: (sessionFile: string) =>
+      ipcRenderer.invoke(IPC.shareExportSanitized, sessionFile) as Promise<{
+        ok: boolean;
+        path?: string;
+        bytes?: number;
+        error?: string;
+        detail?: string;
+      }>,
     editor: (draft: string, setting?: string | null) =>
       ipcRenderer.invoke(IPC.editorOpen, draft, setting) as Promise<{
         ok: boolean;
@@ -425,6 +505,7 @@ const bridge: PiDesktopBridge = {
     subscribe<MenuCommand>(IPC.appMenuCommand, listener),
   prefs,
   sessions,
+  attachments,
   terminal,
   tui,
   projects,

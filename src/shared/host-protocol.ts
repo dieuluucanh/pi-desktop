@@ -76,14 +76,61 @@ export const ROLE_FLAG = "--role";
 export const SAFE_MODE_ENV = "PI_DESKTOP_SAFE_MODE";
 
 /**
- * Pi's own install-telemetry switch (plan step 23). The app sets `PI_TELEMETRY=0`
- * on every host it spawns unless the user opted in, so an app install never
- * sends the anonymous install/attribution ping by default. It is Pi's variable,
- * not an app-private one: `isInstallTelemetryEnabled` in the SDK prefers it over
- * the shared `settings.json`, so the guarantee holds without rewriting the
- * profile terminal Pi also reads.
+ * Absolute path of the staged Workflow artifact (plan steps 26–27).
+ *
+ * Main resolves the layout once (`resources/extensions/workflow` when packaged,
+ * `resources/` + `out/extensions/` in development) and hands the winner to every
+ * host, so a session runtime and the Extensions hub's control host register
+ * **the same** `builtin:workflow` copy. An absent/empty value means no staged
+ * bundle: the host registers no built-in and reports why, and never falls back
+ * to a developer checkout or an npm install.
  */
-export const TELEMETRY_ENV = "PI_TELEMETRY";
+export const WORKFLOW_BUNDLE_DIR_ENV = "PI_DESKTOP_WORKFLOW_BUNDLE_DIR";
+
+/**
+ * The real Pi CLI child agents must run (Workflow plan step 30).
+ *
+ * Workflow's `explore`/review reconnaissance spawn `pi --mode json` themselves.
+ * A host process cannot hand them its own entry point: that entry point runs the
+ * service protocol here, and inheriting {@link SERVICE_ENV} would make the child
+ * a second host instead of a CLI. Main resolves the SDK's own
+ * `dist/bundle/cli.js` and passes it as this variable.
+ */
+export const PI_CLI_ENV = "PI_SUBAGENT_PI_CLI";
+/** Node binary paired with {@link PI_CLI_ENV} (the bundled runtime). */
+export const PI_CLI_NODE_ENV = "PI_SUBAGENT_PI_NODE";
+
+/**
+ * The resolved Workflow entry a child CLI must load (Workflow plan step 30).
+ *
+ * The child's bash gate lives in the Workflow extension, and a fresh CLI process
+ * does not inherit the app's `builtin:workflow` registration. Handing it the
+ * staged artifact and asking for isolation loads exactly one implementation.
+ */
+export const WORKFLOW_EXTENSION_ENV = "PI_SUBAGENT_WORKFLOW_EXTENSION";
+export const WORKFLOW_ISOLATE_ENV = "PI_SUBAGENT_WORKFLOW_ISOLATE";
+
+/**
+ * Names a host must strip from a child CLI's environment.
+ *
+ * Every entry is a Pi Desktop host marker. Inheriting them into a child would
+ * either re-enter service mode or point the child at the app's host bundle —
+ * neither is a Pi session.
+ */
+export const SUBAGENT_ENV_STRIP_ENV = "PI_SUBAGENT_ENV_STRIP";
+
+/** The strip list as it is written into {@link SUBAGENT_ENV_STRIP_ENV}. */
+export function subagentEnvStripList(): string {
+  return [
+    SERVICE_ENV,
+    HOST_ROLE_ENV,
+    SESSION_ID_ENV,
+    HOST_BUILD_ENV,
+    "PI_DESKTOP_HOST_ENTRY",
+    "PI_DESKTOP_TERMINAL_ENTRY",
+    "PI_OFFICE_BRIDGE_PORT",
+  ].join(",");
+}
 
 export type HostRole = "control" | "session";
 
@@ -178,6 +225,28 @@ export const HOST_METHODS = [
   "session.reload",
   // conversation
   "prompt",
+  // Dedicated method: old hosts reject it rather than silently dropping file
+  // references supplied as unknown fields on `prompt`.
+  "attachments.prompt",
+  "attachments.submissions.list",
+  // Parent-only staging/planning channel. These are deliberately rejected by
+  // the renderer-facing session.request allowlist; they are not capabilities.
+  "attachments.context",
+  "attachments.plan",
+  "attachments.transfer.begin",
+  "attachments.transfer.chunk",
+  "attachments.transfer.seal",
+  "attachments.transfer.cancel",
+  // Purpose-scoped original-image preparation. The host decodes and resizes one
+  // owner-checked original and main pulls the prepared bytes back; these are
+  // parent-only and grant no renderer file access or delivery authorization.
+  "attachments.image.begin",
+  "attachments.image.chunk",
+  "attachments.image.prepare",
+  "attachments.image.read",
+  "attachments.image.cancel",
+  // Non-submitting readiness: metadata only, no staging, no dispatch attempt.
+  "attachments.readiness",
   "steer",
   "followUp",
   "abort",
@@ -197,6 +266,26 @@ export const HOST_METHODS = [
   // boundary, so the host runs it and returns plain items).
   "commands.run",
   "commands.complete",
+  // Generic extension contributions (orchestrator plan steps 7-8). The host
+  // applies validated envelopes from the extension bus and exposes one
+  // extension-agnostic snapshot plus a command-validated action runner.
+  "contributions.state",
+  "contributions.run",
+  // Related-session host contract (orchestrator plan step 12): a host forwards
+  // an extension's create/open/focus/... request to main as an event, and main
+  // settles the pending idempotent operation with this request.
+  "sessionHost.result",
+  // Composer-transform host contract (prompt-refinement plan step 14). Start
+  // returns a source-bound receipt; status/cancel/applied are idempotent. The
+  // private typed port travels through the in-process rendezvous, never a
+  // prompt or a command string.
+  "composer.transform",
+  "composer.status",
+  "composer.cancel",
+  "composer.applied",
+  // Reconciliation read (prompt-refinement plan step 23): a reloaded renderer
+  // asks for the live operation bound to its tab before starting another.
+  "composer.current",
   "tools.list",
   "tools.setActive",
   "model.list",
@@ -220,6 +309,12 @@ export const HOST_METHODS = [
   "providers.login",
   "providers.logout",
   "providers.setKey",
+  // session-less text generation (commit message): one-shot `completeSimple` on
+  // the control host — no `AgentSession`, no JSONL and no extension. No RPC
+  // equivalent either: RPC has no session-less completion.
+  "text.models",
+  "text.generate",
+  "text.cancel",
   "packages.install",
   "packages.remove",
   "packages.update",
@@ -237,6 +332,12 @@ export const HOST_METHODS = [
   // it. Declared explicitly because `isHostMethod` guards the request path.
   "oi.setToolsExpanded",
   "oi.editorText",
+  // The renderer's acknowledgement that it consumed one editor command (plan
+  // step 17). Delivery of `setEditorText`/`pasteToEditor` is one-shot per
+  // renderer attachment, so a reconnected renderer is never handed the same
+  // edit again. Additive: an older host rejects it and the renderer ignores the
+  // rejection.
+  "oi.editorConsumed",
   "completion.suggest",
   "completion.apply",
   // The extension TUI surface (plan step 17). No RPC equivalent: RPC mode's
@@ -301,6 +402,42 @@ export const HOST_METHODS = [
 ] as const;
 
 export type HostMethod = (typeof HOST_METHODS)[number];
+export type AttachmentPrivateHostMethod =
+  | "attachments.context"
+  | "attachments.plan"
+  | "attachments.prompt"
+  | "attachments.submissions.list"
+  | "attachments.transfer.begin"
+  | "attachments.transfer.chunk"
+  | "attachments.transfer.seal"
+  | "attachments.transfer.cancel"
+  | "attachments.image.begin"
+  | "attachments.image.chunk"
+  | "attachments.image.prepare"
+  | "attachments.image.read"
+  | "attachments.image.cancel"
+  | "attachments.readiness";
+
+const ATTACHMENT_PRIVATE_METHODS: readonly AttachmentPrivateHostMethod[] = [
+  "attachments.context",
+  "attachments.plan",
+  "attachments.prompt",
+  "attachments.submissions.list",
+  "attachments.transfer.begin",
+  "attachments.transfer.chunk",
+  "attachments.transfer.seal",
+  "attachments.transfer.cancel",
+  "attachments.image.begin",
+  "attachments.image.chunk",
+  "attachments.image.prepare",
+  "attachments.image.read",
+  "attachments.image.cancel",
+  "attachments.readiness",
+];
+
+export function isPrivateHostMethod(value: unknown): value is AttachmentPrivateHostMethod {
+  return ATTACHMENT_PRIVATE_METHODS.includes(value as AttachmentPrivateHostMethod);
+}
 
 export function isHostMethod(value: unknown): value is HostMethod {
   return typeof value === "string" && (HOST_METHODS as readonly string[]).includes(value);

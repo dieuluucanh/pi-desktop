@@ -26,6 +26,7 @@
     // the bundled host runtime.
     "src/git/**/*.ts",
     "src/checkpoints/**/*.ts",
+    "src/attachments/**/*.ts",
     "src/workspace/**/*.ts",
     "src/extensions/**/*.ts",
     // The completion engine is pure (no DOM, no React): the node project checks it
@@ -38,6 +39,10 @@
     "vitest.config.ts"
   ],
   "exclude": [
+    // The bundling fixtures are packed and loaded as a package, not compiled
+    // with the app's TS settings (they use the `.ts` ESM specifiers the Pi
+    // loader accepts).
+    "tests/fixtures/workflow-bundle/**",
     "tests/renderer/**",
     "tests/e2e/**",
     "tests/screenshots/**",

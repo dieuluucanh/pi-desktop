@@ -25,6 +25,8 @@ export interface AppPaths {
   blobCache: string;
   /** Hot-exit editor backups (`<tabId>.json`). */
   editorBackups: string;
+  /** App-owned attachment snapshots, separate from Pi state and blob spill. */
+  attachments: string;
   /** The shared Pi profile directory. */
   profileDir: string;
   /** Which profile strategy produced {@link profileDir} (plan step 26). */
@@ -106,6 +108,7 @@ export function resolveAppPaths(input: ResolveAppPathsInput): AppPaths {
     logs: join(input.userDataDir, "logs"),
     blobCache: join(input.userDataDir, "blob-cache"),
     editorBackups: join(input.userDataDir, "editor-backups"),
+    attachments: join(input.userDataDir, "attachments"),
     appStateFile: join(input.userDataDir, "app-state.json"),
     profileDir: profileDirFor({
       mode: profileMode,

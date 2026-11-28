@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { stat, writeFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { readFileSync, existsSync } from "node:fs";
+import { readFile, realpath, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { freemem, totalmem } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -36,12 +37,54 @@ import type {
   SessionTabsEnvelope,
   TabKind,
 } from "../shared/session-ipc";
-import { CONTROL_TAB_ID } from "../shared/session-ipc";
+import { CONTROL_TAB_ID, isHostBackedTab } from "../shared/session-ipc";
 import { HOST_METHODS } from "../shared/host-protocol";
 import { menuAcceleratorsFor, resolveDesktopKeymap } from "../shared/desktop-keymap";
 import { DEFAULT_ZOOM, clampZoomFactor } from "../shared/zoom";
 import { APP_COPYRIGHT, APP_NAME, APP_USER_MODEL_ID, resolveBranding } from "./branding";
 import { createAppStore } from "./app-store";
+import { createAttachmentStore } from "../attachments/store";
+import { prepareDirectAttachment } from "../attachments/prepare";
+import {
+  isAttachmentId,
+  isWellFormedAttachmentText,
+  type AttachmentDeliveryRequest,
+  type AttachmentPromptResult,
+  type AttachmentReason,
+  type AttachmentStatusRequest,
+  type AttachmentSubmissionStatus,
+} from "../shared/attachments";
+import { createAttachmentService, type AttachmentService } from "./attachment-service";
+import { createAttachmentThumbnailCache } from "./attachment-thumbnails";
+import { createHostImageEncoder } from "./attachment-image-host-encoder";
+import { createAttachmentDeliveryLeases } from "./attachment-delivery-leases";
+import {
+  createAttachmentDeliverySubmissionService,
+  type AttachmentDeliverySubmissionService,
+} from "./attachment-delivery-submission";
+import { createNodeAttachmentStoreIo } from "./attachment-store-io";
+import { createAttachmentOwnershipReconciler } from "./attachment-ownership";
+import {
+  createAttachmentConversionStore,
+  createNodeConversionStoreIo,
+} from "./attachment-conversion-store";
+import type { AttachmentConversionStore } from "./attachment-conversion-store";
+import { createAttachmentRetention, type AttachmentRetention } from "./attachment-retention";
+import { createExtractionSupervisor, type ExtractionSupervisor } from "./extraction-supervisor";
+import { createNodeExtractionDeps } from "./extraction-node";
+import type {
+  AttachmentRetentionClearReport,
+  AttachmentStorageReport,
+} from "../shared/attachment-storage";
+import {
+  createAttachmentSubmissionJournal,
+  createNodeAttachmentSubmissionJournalIo,
+} from "./attachment-submission-journal";
+import { stageAttachmentDelivery } from "./attachment-delivery-transfer";
+import { parseAttachmentReadinessVerdict } from "./attachment-readiness";
+import { resolveAttachmentAvailability } from "./attachment-availability";
+import { openSelectedAttachment } from "./attachment-source-io";
+import { ATTACHMENT_FILE_DIALOG_FILTERS, pickAttachments } from "./attachment-picker";
 import { createNodeFsPort } from "./fs-port";
 import { createTerminalLog, type TerminalLog } from "./terminal-log";
 import { createHostBuildId } from "./host-build";
@@ -57,12 +100,26 @@ import {
   registerIpcHandlers,
   revealPathWithShell,
   sanitizeTitle,
+  type IpcAttachmentDeps,
   type IpcSessionDeps,
 } from "./ipc";
 import { installAppMenu } from "./menu";
 import { contextMenuTemplate } from "./context-menu";
 import { createCommandRunner } from "./office/exec";
-import { buildBugReport, messagesFromJsonl, shareSession, summarizeForBugReport } from "./share";
+import {
+  buildBugReport,
+  messagesFromJsonl,
+  redactSecrets,
+  shareSession,
+  summarizeForBugReport,
+} from "./share";
+import { sanitizeTranscriptJsonl } from "./share-sanitize";
+import {
+  createAttachmentBundle,
+  importAttachmentBundle,
+  inspectAttachmentBundle,
+} from "./attachment-bundle";
+import { attachmentSessionOwner } from "./attachment-ownership";
 import { openInExternalEditor } from "./editor";
 import { createProjectOps } from "./project-ops";
 import { createProjectsService } from "./projects-service";
@@ -134,7 +191,7 @@ import {
   createStartupMetrics,
 } from "../shared/performance";
 import type { DiagnosticsSaveResult } from "../shared/ipc";
-import { resolveAppRuntime, type RuntimeResolution } from "./runtime";
+import { resolveAppRuntime, resolveWorkflowBundle, type RuntimeResolution } from "./runtime";
 import { rendererWindowOptions, sanitizeExternalUrl } from "./security";
 
 /**
@@ -155,13 +212,6 @@ const safeMode = isSafeMode();
  * the E2E perf test asserts it.
  */
 const startup = createStartupMetrics();
-
-/**
- * Pi's install telemetry (plan step 23). Off until the user opts in on the
- * privacy screen; the supervisor reads this at each spawn and passes
- * `PI_TELEMETRY` accordingly, so an app install never sends a ping by default.
- */
-let telemetryEnabled = false;
 
 // Electron's own state directory can be redirected from the environment. The E2E
 // harness needs a guaranteed-private userData (a Chromium switch after the app
@@ -247,6 +297,30 @@ const runtime: RuntimeResolution = resolveAppRuntime({
  * shared by both so the comparison is meaningful.
  */
 const hostBuildId = createHostBuildId(runtime.piHostPath);
+
+/**
+ * The staged Workflow artifact (plan step 27).
+ *
+ * Main is the only layer that knows the packaged/dev layout (`resources/extensions`
+ * vs `out/extensions`), so it resolves the copy **once** and hands the winner to
+ * every host as `PI_DESKTOP_WORKFLOW_BUNDLE_DIR`. Both the control host (the
+ * Extensions hub) and each session host then register the same named builtin.
+ * A missing/invalid stage is not repaired here: nothing is installed, copied or
+ * downloaded, and the hosts report why `builtin:workflow` is absent.
+ */
+const workflowBundle = resolveWorkflowBundle({
+  isPackaged: app.isPackaged,
+  resourcesPath: roots.resourcesDir,
+  appRoot: roots.appRoot,
+  env: process.env,
+  exists: existsSync,
+  readFile: (target) => readFileSync(target, "utf8"),
+});
+if (!workflowBundle.ok) {
+  console.warn(
+    `[pi-desktop] bundled Workflow unavailable: ${workflowBundle.problems.join("; ") || workflowBundle.hint}`,
+  );
+}
 
 /** Where the brand icons are (plan step 28): `resources/branding` or `assets/`. */
 const branding = resolveBranding({
@@ -359,6 +433,11 @@ const SESSION_CHANNELS: Record<SessionEmitChannel, string> = {
   tabs: IPC.sessionTabsChanged,
 };
 
+// The service is initialized lazily below; tab pushes must not start it.
+const attachmentTabReconciler: { current: (ids: readonly string[]) => void } = {
+  current: () => {},
+};
+
 /**
  * One host process per session tab (plan step 4). Hosts are started by the tab
  * layer (plan step 11); main owns their lifetime so a quit always cleans up.
@@ -426,11 +505,20 @@ const hosts = runtime.nodePath
       backupDir: join(paths.userData, "backups"),
       profileDir: paths.profileDir,
       ...(runtime.npmCliPath ? { npmCliPath: runtime.npmCliPath } : {}),
+      // The real Pi CLI child agents run (Workflow plan step 30). Never the host
+      // entry point: that one speaks this app's service protocol.
+      ...(runtime.piCliPath ? { piCliPath: runtime.piCliPath } : {}),
       // Safe mode (plan step 22): every host loads no third-party resources and
       // refuses package mutations.
       safeMode,
-      // Install telemetry (plan step 23): off unless the user opted in.
-      telemetryEnabled: () => telemetryEnabled,
+      // The staged Workflow artifact (plan step 27) → `builtin:workflow` in every
+      // host, including the control host the Extensions hub uses.
+      ...(workflowBundle.ok ? { workflowBundleDir: workflowBundle.dir } : {}),
+      // The same resolved Workflow, injected into child CLI runs so their bash
+      // gate exists exactly once (Workflow plan step 30).
+      ...(workflowBundle.ok && workflowBundle.entryPath
+        ? { workflowBundleEntry: workflowBundle.entryPath }
+        : {}),
       // The running host reports this id in `host.hello`; a later rebuild makes
       // it differ from the file on disk (2026-10-24 stale-host plan).
       hostBuildId,
@@ -644,6 +732,9 @@ const sessions: SessionService | null = hosts
           // And the terminal service's: every close path (close, close-others,
           // close-project, restore) lands here, so a PTY cannot outlive its tab.
           for (const service of terminalServices.values()) service.syncTabs();
+          attachmentTabReconciler.current(
+            envelope.tabs.filter((tab) => isHostBackedTab(tab.kind)).map((tab) => tab.id),
+          );
         }
       },
     })
@@ -679,9 +770,558 @@ function requireSessions(): SessionService {
   return sessions;
 }
 
+function isTrustedAttachmentSender(senderId: number): boolean {
+  return (
+    mainWindow !== null &&
+    !mainWindow.isDestroyed() &&
+    !mainWindow.webContents.isDestroyed() &&
+    mainWindow.webContents.id === senderId
+  );
+}
+
+interface AttachmentServiceRuntime extends AttachmentService {
+  /** Main-only delivery; renderer input is reduced to owner-checked original IDs. */
+  submitDelivery(
+    input: Parameters<AttachmentDeliverySubmissionService["submit"]>[0],
+  ): ReturnType<AttachmentDeliverySubmissionService["submit"]>;
+  deliver(senderId: number, input: AttachmentDeliveryRequest): Promise<AttachmentPromptResult>;
+  status(senderId: number, input: AttachmentStatusRequest): Promise<AttachmentSubmissionStatus>;
+  disposeDelivery(): void;
+  /** Main-owned conversion proposals/approvals (plan step 19). */
+  conversions: AttachmentConversionStore;
+  /** Main-owned recovery/retention policy (plan step 13). */
+  retention: AttachmentRetention;
+  storage(): Promise<AttachmentStorageReport | null>;
+  clearStorage(): Promise<AttachmentRetentionClearReport>;
+  bundleExport(
+    tabId: string,
+    includeObjects: boolean,
+  ): Promise<Awaited<ReturnType<typeof createAttachmentBundle>>>;
+  bundleImport(
+    tabId: string,
+    zip: Uint8Array,
+  ): Promise<{ originals: number; representations: number }>;
+}
+
+/**
+ * Trusted product gate, independent of protocol support (plan step 8). Packaged
+ * builds stay off until step 16 verifies milestone A; development/tests enable
+ * it through `PI_DESKTOP_ATTACHMENTS`, never through renderer readiness.
+ */
+const attachmentAvailability = resolveAttachmentAvailability({
+  packaged: app.isPackaged,
+  env: process.env,
+});
+
+/**
+ * Document extraction is a separate process and a separate release gate (plan
+ * step 18). It is created lazily: no worker spawns until a conversion service
+ * asks for one. Safe mode hard-disables it; packaged milestone-B builds stay
+ * off until their gate is enabled with the trusted environment override.
+ */
+let extractionSupervisorPromise: Promise<ExtractionSupervisor> | null = null;
+function documentExtractionSupervisor(): Promise<ExtractionSupervisor> {
+  if (!extractionSupervisorPromise) {
+    extractionSupervisorPromise = (async () => {
+      if (!runtime.ok || !runtime.nodePath) {
+        throw new Error("document extraction requires the bundled Node runtime");
+      }
+      return createExtractionSupervisor(
+        createNodeExtractionDeps({
+          nodePath: runtime.nodePath,
+          workerPath: runtime.extractionWorkerPath,
+          tempRoot: join(paths.userData, "extraction"),
+          enabled: !app.isPackaged || process.env.PI_DESKTOP_DOCUMENT_EXTRACTION === "1",
+          safeMode,
+        }),
+      );
+    })();
+  }
+  return extractionSupervisorPromise;
+}
+
+let attachmentServicePromise: Promise<AttachmentServiceRuntime> | null = null;
+/** Bounded, content-addressed prepared-image thumbnails (never raw originals). */
+const attachmentThumbnails = createAttachmentThumbnailCache();
+function attachmentService(): Promise<AttachmentServiceRuntime> {
+  if (!attachmentServicePromise) {
+    attachmentServicePromise = (async () => {
+      let canonicalProfile: string;
+      try {
+        canonicalProfile = await realpath(paths.profileDir);
+      } catch {
+        throw new Error("attachments: the Pi profile is unavailable");
+      }
+      const identity =
+        process.platform === "win32" ? canonicalProfile.toLowerCase() : canonicalProfile;
+      const profile = createHash("sha256").update(identity).digest("hex");
+      const store = createAttachmentStore({
+        profile,
+        io: createNodeAttachmentStoreIo({ root: paths.attachments }),
+        newId: randomUUID,
+        now: Date.now,
+      });
+      const journal = createAttachmentSubmissionJournal({
+        root: paths.attachments,
+        profileKey: profile,
+        io: createNodeAttachmentSubmissionJournalIo(),
+        now: Date.now,
+      });
+      const conversions = createAttachmentConversionStore({
+        root: paths.attachments,
+        profileKey: profile,
+        io: createNodeConversionStoreIo(),
+        now: Date.now,
+      });
+      // A restart never resumes an in-flight conversion: stale active jobs are
+      // failed and must be requested again explicitly (plan step 19).
+      void conversions.reconcile().catch(() => undefined);
+      const ownership = createAttachmentOwnershipReconciler({
+        store,
+        journal,
+        profileKey: profile,
+        isRetired: (owner) => store.isRetired(owner),
+        clearTombstone: (owner) => store.clearTombstone(owner),
+        markReconciled: (entry) => journal.markOwnershipReconciled(entry.turnId, entry.attemptId),
+        report: (incident) => console.warn(`[attachments] ${incident}`),
+      });
+      const retention = createAttachmentRetention({
+        profileKey: profile,
+        store,
+        journal,
+        ownership,
+        now: Date.now,
+        report: (incident) => console.warn(`[attachments] ${incident}`),
+      });
+      // A crash between durable acceptance and promotion is repaired without a
+      // host, and never by resending the turn (plan steps 12-13).
+      void retention.sweep().catch(() => undefined);
+      const service = createAttachmentService({
+        store,
+        prepareDirect: async (owner, attachmentId, context) => {
+          const prepared = await prepareDirectAttachment(
+            {
+              store,
+              encoder: createHostImageEncoder(
+                {
+                  pin: () => requireSessions().pinSessionHost(context.tabId),
+                  newId: randomUUID,
+                  sha256: async (bytes) => createHash("sha256").update(bytes).digest("hex"),
+                  thumbnails: attachmentThumbnails,
+                },
+                { tabId: context.tabId, originalId: attachmentId },
+              ),
+              sha256: async (bytes) => createHash("sha256").update(bytes).digest("hex"),
+            },
+            owner,
+            attachmentId,
+          );
+          return prepared.status === "ready"
+            ? { status: "ready" as const, representationId: prepared.representation.id }
+            : { status: "needs_conversion" as const };
+        },
+        authorize: (senderId, tabId) =>
+          isTrustedAttachmentSender(senderId) &&
+          (sessions?.tabs().some((tab) => tab.id === tabId && isHostBackedTab(tab.kind)) ?? false),
+        imageThumbnail: (representationSha256) => attachmentThumbnails.get(representationSha256),
+        evaluateReadiness: async (assets, text, context) => {
+          if (!attachmentAvailability.available) {
+            return { ok: false as const, reason: "release_unavailable" as const };
+          }
+          let pin: ReturnType<SessionService["pinSessionHost"]>;
+          try {
+            pin = requireSessions().pinSessionHost(context.tabId);
+          } catch {
+            return { ok: false as const, reason: "unavailable" as const };
+          }
+          try {
+            if (!pin.attachmentDelivery.supported) {
+              return { ok: false as const, reason: "host_unsupported" as const };
+            }
+            const raw = await pin.request("attachments.readiness", {
+              profileKey: profile,
+              text,
+              files: assets.map((asset) => ({
+                id: asset.id,
+                originalKind: asset.originalKind,
+                originalBytes: asset.originalBytes,
+                modality: asset.modality,
+                representationBytes: asset.representationBytes,
+                image: asset.image,
+              })),
+            });
+            const verdict = parseAttachmentReadinessVerdict(
+              raw,
+              assets.map((asset) => asset.id),
+            );
+            return verdict
+              ? { ok: true as const, verdict }
+              : { ok: false as const, reason: "unavailable" as const };
+          } catch {
+            return { ok: false as const, reason: "unavailable" as const };
+          } finally {
+            pin.release();
+          }
+        },
+        newId: randomUUID,
+        now: Date.now,
+        createHash: () => {
+          const hash = createHash("sha256");
+          return {
+            update: (bytes) => {
+              hash.update(bytes);
+            },
+            digest: () => hash.digest("hex"),
+          };
+        },
+      });
+      const deliveries = createAttachmentDeliveryLeases({
+        profileKey: profile,
+        drafts: service,
+        sessions: { pinSessionHost: (tabId) => requireSessions().pinSessionHost(tabId) },
+        store,
+        conversions,
+        newAuthorityId: randomUUID,
+        // Profile paths are fixed for this main-process lifetime.
+        profileCurrent: () => true,
+        now: Date.now,
+        schedule: (delayMs, callback) => {
+          const timer = setTimeout(callback, delayMs);
+          timer.unref();
+          return () => clearTimeout(timer);
+        },
+        sha256: async (bytes) => createHash("sha256").update(bytes).digest("hex"),
+      });
+      const submission = createAttachmentDeliverySubmissionService({
+        open: (input) => deliveries.open(input),
+        stage: (lease) =>
+          stageAttachmentDelivery({ pin: lease.hostPin, lease, journal, ownership }),
+        closeDraft: (senderId, draft) => service.closeDraft(senderId, draft),
+      });
+      return Object.assign(service, {
+        conversions,
+        retention,
+        storage: () => retention.report(),
+        clearStorage: () => retention.clear(),
+        async bundleExport(tabId: string, includeObjects: boolean) {
+          const pin = requireSessions().pinSessionHost(tabId);
+          try {
+            const owner = attachmentSessionOwner(profile, pin.sessionId);
+            const assets = await store.list(owner);
+            if (assets.length === 0) throw new Error("attachments: no owned files to bundle");
+            return await createAttachmentBundle({
+              assets,
+              read: async (asset) =>
+                (await store.readForPreparation(asset.id, owner, asset.size)).bytes,
+              includeObjects,
+              now: Date.now(),
+            });
+          } finally {
+            pin.release();
+          }
+        },
+        async bundleImport(tabId: string, zip: Uint8Array) {
+          const inspection = inspectAttachmentBundle(zip);
+          if (!inspection.ok) {
+            throw new Error(`attachments: ${inspection.error}`);
+          }
+          const pin = requireSessions().pinSessionHost(tabId);
+          try {
+            const owner = attachmentSessionOwner(profile, pin.sessionId);
+            return await importAttachmentBundle(store, owner, inspection.bundle);
+          } finally {
+            pin.release();
+          }
+        },
+        submitDelivery: (input: Parameters<AttachmentDeliverySubmissionService["submit"]>[0]) =>
+          submission.submit(input),
+        async deliver(
+          senderId: number,
+          request: AttachmentDeliveryRequest,
+        ): Promise<AttachmentPromptResult> {
+          const { draft, attachmentIds, turnId, attemptId, explicitRetry, text } = request;
+          const blocked = (reason: AttachmentReason): AttachmentPromptResult => ({
+            outcome: "blocked",
+            reasons: [reason],
+            turnId,
+            attemptId,
+          });
+          if (
+            !isWellFormedAttachmentText(text) ||
+            !isAttachmentId(turnId) ||
+            turnId !== draft.draftId ||
+            !isAttachmentId(attemptId) ||
+            typeof explicitRetry !== "boolean" ||
+            !Array.isArray(attachmentIds) ||
+            attachmentIds.length === 0 ||
+            attachmentIds.some((id) => !isAttachmentId(id))
+          ) {
+            return blocked("unavailable");
+          }
+          if (!attachmentAvailability.available) return blocked("release_unavailable");
+          let pin: ReturnType<SessionService["pinSessionHost"]> | null = null;
+          try {
+            pin = requireSessions().pinSessionHost(draft.tabId);
+            // Negotiate before any preparation or staging: an old, newer or
+            // malformed host gets zero bytes and no legacy text-only fallback.
+            if (!pin.attachmentDelivery.supported) return blocked("host_unsupported");
+            const prepared = await service.prepareForDelivery(senderId, draft, attachmentIds);
+            if ("reasons" in prepared) {
+              return {
+                outcome: "blocked",
+                reasons: prepared.reasons,
+                turnId,
+                attemptId,
+              } satisfies AttachmentPromptResult;
+            }
+            const rawContext = await pin.request("attachments.context", {});
+            if (!rawContext || typeof rawContext !== "object" || Array.isArray(rawContext)) {
+              return blocked("unavailable");
+            }
+            const context = rawContext as Record<string, unknown>;
+            if (
+              Object.keys(context).length !== 4 ||
+              !Object.keys(context).every((key) =>
+                ["sessionId", "sessionEpoch", "branchId", "revision"].includes(key),
+              ) ||
+              context.sessionId !== pin.sessionId ||
+              context.sessionEpoch !== pin.sessionEpoch ||
+              (context.branchId !== null && typeof context.branchId !== "string") ||
+              typeof context.revision !== "string" ||
+              context.revision.length === 0
+            ) {
+              return blocked("unavailable");
+            }
+            return await submission.submit({
+              senderId,
+              draft,
+              representationIds: prepared.representationIds,
+              context: {
+                sessionId: pin.sessionId,
+                sessionEpoch: pin.sessionEpoch,
+                branchId: context.branchId as string | null,
+                revision: context.revision,
+                isCurrent: () => pin?.isCurrent() === true,
+              },
+              turnId,
+              attemptId,
+              text,
+              ...(explicitRetry ? { explicitRetry: true } : {}),
+            });
+          } catch (error) {
+            const reason: AttachmentReason =
+              error &&
+              typeof error === "object" &&
+              "code" in error &&
+              (error as { code: unknown }).code === "busy"
+                ? "busy"
+                : "unavailable";
+            return blocked(reason);
+          } finally {
+            pin?.release();
+          }
+        },
+        async status(
+          senderId: number,
+          request: AttachmentStatusRequest,
+        ): Promise<AttachmentSubmissionStatus> {
+          service.authorizeDraft(senderId, request.draft);
+          const turnId = request.draft.draftId;
+          // `list` also normalizes a dispatching record whose owning process is
+          // gone into `uncertain`; this process's in-flight set protects live work.
+          const entries = await journal.list();
+          let entry = entries.filter((candidate) => candidate.turnId === turnId).at(-1) ?? null;
+          if (!entry) {
+            // A retired terminal attempt keeps its compact status: a missing
+            // full record must never look like a fresh draft or disable retry.
+            const retired = await journal.findRetired(turnId);
+            if (retired) {
+              return {
+                version: 1,
+                phase: retired.state,
+                turnId: retired.turnId,
+                attemptId: retired.attemptId,
+                result: retired.result,
+                retryOfAttemptId: retired.retryOfAttemptId,
+                textMatches: false,
+                filesMatch: false,
+                originalIds: [],
+                representationIds: [],
+                updatedAt: retired.retiredAt,
+              };
+            }
+            return {
+              version: 1,
+              phase: "none",
+              turnId: null,
+              attemptId: null,
+              result: null,
+              retryOfAttemptId: null,
+              textMatches: false,
+              filesMatch: false,
+              originalIds: [],
+              representationIds: [],
+              updatedAt: null,
+            };
+          }
+          // Reconcile against durable SDK history when the session host is
+          // available. Failure keeps the last durable journal state; it never
+          // turns uncertainty into acceptance.
+          try {
+            const pin = requireSessions().pinSessionHost(entry.scope.tabId);
+            try {
+              if (pin.sessionId === entry.scope.sessionId) {
+                const raw = await pin.request("attachments.submissions.list", {});
+                const associations =
+                  raw && typeof raw === "object" && !Array.isArray(raw)
+                    ? (raw as Record<string, unknown>).associations
+                    : undefined;
+                if (Array.isArray(associations)) {
+                  const reconciled = await journal.reconcile(entry.scope, associations);
+                  await ownership.reconcile(reconciled);
+                  await ownership.adopt({
+                    sessionId: pin.sessionId,
+                    branchId: null,
+                    associations,
+                  });
+                  entry = (await journal.get(entry.turnId, entry.attemptId)) ?? entry;
+                }
+              }
+            } finally {
+              pin.release();
+            }
+          } catch {
+            // Durable status remains authoritative until a live read succeeds.
+          }
+          const originalIds = entry.representations.map(
+            (representation) => representation.originalId,
+          );
+          const representationIds = entry.representations.map(
+            (representation) => representation.representationId,
+          );
+          const textDigest = createHash("sha256").update(request.text, "utf8").digest("hex");
+          return {
+            version: 1,
+            phase: entry.state,
+            turnId: entry.turnId,
+            attemptId: entry.attemptId,
+            result: entry.result,
+            retryOfAttemptId: entry.retryOfAttemptId,
+            textMatches: textDigest === entry.sourceTextSha256,
+            filesMatch:
+              originalIds.length === request.attachmentIds.length &&
+              originalIds.every((id, index) => id === request.attachmentIds[index]),
+            originalIds,
+            representationIds,
+            updatedAt: entry.updatedAt,
+          };
+        },
+        disposeDelivery: () => deliveries.dispose(),
+      });
+    })().catch((error: unknown) => {
+      attachmentServicePromise = null;
+      throw error;
+    });
+  }
+  return attachmentServicePromise!;
+}
+
+attachmentTabReconciler.current = (ids) => {
+  if (attachmentServicePromise) {
+    void attachmentServicePromise
+      .then((service) => service.reconcileTabs(ids))
+      .catch(() => undefined);
+  }
+};
+
+const attachmentsIpc: IpcAttachmentDeps = {
+  isTrustedSender: isTrustedAttachmentSender,
+  openDraft: async (senderId, tabId, draftId) =>
+    (await attachmentService()).openDraft(senderId, tabId, draftId),
+  closeDraft: async (senderId, draft) => (await attachmentService()).closeDraft(senderId, draft),
+  pick: async (senderId, draft) => {
+    const service = await attachmentService();
+    return pickAttachments(
+      {
+        service,
+        select: async () => {
+          if (!mainWindow || mainWindow.isDestroyed())
+            throw new Error("attachments: window unavailable");
+          const result = await dialog.showOpenDialog(mainWindow, {
+            title: "Attach files",
+            properties: ["openFile", "multiSelections"],
+            filters: ATTACHMENT_FILE_DIALOG_FILTERS.map(({ name, extensions }) => ({
+              name,
+              extensions: [...extensions],
+            })),
+          });
+          return result.canceled ? null : result.filePaths;
+        },
+        openSelected: openSelectedAttachment,
+      },
+      senderId,
+      draft,
+    );
+  },
+  begin: async (senderId, input) => (await attachmentService()).begin(senderId, input),
+  append: async (senderId, draft, token, offset, bytes) =>
+    (await attachmentService()).append(senderId, draft, token, offset, bytes),
+  commit: async (senderId, draft, token) =>
+    (await attachmentService()).commit(senderId, draft, token),
+  cancel: async (senderId, draft, token) =>
+    (await attachmentService()).cancel(senderId, draft, token),
+  list: async (senderId, draft) => (await attachmentService()).list(senderId, draft),
+  preview: async (senderId, draft, id, maxBytes) =>
+    (await attachmentService()).preview(senderId, draft, id, maxBytes),
+  remove: async (senderId, draft, id) => (await attachmentService()).remove(senderId, draft, id),
+  deliver: async (senderId, input) => (await attachmentService()).deliver(senderId, input),
+  status: async (senderId, input) => (await attachmentService()).status(senderId, input),
+  readiness: async (senderId, draft, attachmentIds, text) =>
+    (await attachmentService()).readiness(senderId, draft, attachmentIds, text),
+  storage: async () => (await attachmentService()).storage(),
+  clearStorage: async () => (await attachmentService()).clearStorage(),
+  exportBundle: async (_senderId, tabId, includeObjects) => {
+    try {
+      const bundle = await (await attachmentService()).bundleExport(tabId, includeObjects);
+      const { canceled, filePath } = await dialog.showSaveDialog({
+        title: "Export attachment bundle",
+        defaultPath: `pi-attachments-${new Date().toISOString().slice(0, 10)}.zip`,
+        filters: [{ name: "Attachment bundle", extensions: ["zip"] }],
+      });
+      if (canceled || !filePath) return { ok: false, error: "cancelled" };
+      await writeFile(filePath, bundle.zip);
+      return {
+        ok: true,
+        path: filePath,
+        assets: bundle.manifest.assets.length,
+        objects: bundle.objects,
+      };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  },
+  importBundle: async (_senderId, tabId) => {
+    try {
+      const picked = await dialog.showOpenDialog({
+        title: "Import attachment bundle",
+        properties: ["openFile"],
+        filters: [{ name: "Attachment bundle", extensions: ["zip"] }],
+      });
+      const path = picked.canceled ? undefined : picked.filePaths[0];
+      if (!path) return { ok: false, error: "cancelled" };
+      const zip = new Uint8Array(await readFile(path));
+      const result = await (await attachmentService()).bundleImport(tabId, zip);
+      return { ok: true, path, ...result };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  },
+};
+
 /** The validated session surface the IPC layer drives. */
 const sessionsIpc: IpcSessionDeps = {
   knownTabIds: () => sessions?.tabs().map((tab) => tab.id) ?? [],
+  wasRecentlyClosed: (tabId: string) => sessions?.wasRecentlyClosed(tabId) ?? false,
   list: () => sessions?.envelope() ?? { tabs: [], activeTabId: null },
   create: (input: CreateTabInput) => requireSessions().createTab(input),
   close: (tabId: string) => requireSessions().closeTab(tabId),
@@ -743,12 +1383,43 @@ async function deleteSessionFile(sessionFile: string): Promise<SessionDeleteResu
   try {
     const resolved = (await sessions.request(CONTROL_TAB_ID, "session.delete", {
       sessionFile,
-    })) as { path?: unknown } | undefined;
+    })) as { path?: unknown; id?: unknown } | undefined;
     const path = typeof resolved?.path === "string" ? resolved.path : sessionFile;
     if (!isDeletableSessionPath(path, paths.profileDir)) {
       return { ok: false, error: "The host resolved a path outside the Pi profile." };
     }
-    await shell.trashItem(path);
+    const sessionId =
+      typeof resolved?.id === "string" && resolved.id.length > 0 ? resolved.id : null;
+    let retention: AttachmentRetention | null = null;
+    if (sessionId) {
+      try {
+        retention = (await attachmentService()).retention;
+      } catch {
+        return {
+          ok: false,
+          error: "Attachment storage is unavailable, so the session was not deleted.",
+        };
+      }
+      try {
+        // Write the 30-day tombstone before the JSONL moves to the trash: a
+        // crash after this point leaves recoverable assets, never a missing
+        // association with live owners.
+        await retention.retireSession(sessionId);
+      } catch {
+        return {
+          ok: false,
+          error: "The session's attachment copies could not be secured, so it was not deleted.",
+        };
+      }
+    }
+    try {
+      await shell.trashItem(path);
+    } catch (error) {
+      if (retention && sessionId) {
+        await retention.restoreSession(sessionId).catch(() => undefined);
+      }
+      throw error;
+    }
     return { ok: true, path };
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) };
@@ -1490,9 +2161,6 @@ if (!app.requestSingleInstanceLock()) {
 
   app.whenReady().then(async () => {
     startup.markAppReady();
-    // Load the persisted preferences once before any host can spawn, so the
-    // telemetry flag is correct for the first session (plan step 23).
-    telemetryEnabled = (await appState.read()).prefs.telemetryEnabled;
 
     // One-time default-off pass: snapshot/empty any existing project settings
     // document before the first session can read it. A failure is logged and
@@ -1638,6 +2306,35 @@ if (!app.requestSingleInstanceLock()) {
         ),
       // `/bug`: a local zip; nothing is uploaded from the app (Radius upload is
       // documented as not wired in this build).
+      exportSanitizedTranscript: async (sessionFile: string) => {
+        if (typeof sessionFile !== "string" || sessionFile.length === 0) {
+          return { ok: false, error: "no_file" };
+        }
+        const raw = await createNodeFsPort().readTextFile(sessionFile);
+        if (raw === null || raw.length === 0) return { ok: false, error: "no_file" };
+        let sanitized: string;
+        try {
+          sanitized = redactSecrets(sanitizeTranscriptJsonl(raw).jsonl);
+        } catch {
+          return {
+            ok: false,
+            error: "sanitize_failed",
+            detail: "The session could not be sanitized safely.",
+          };
+        }
+        const { canceled, filePath } = await dialog.showSaveDialog({
+          title: "Export sanitized transcript",
+          defaultPath: `pi-session-${new Date().toISOString().slice(0, 10)}-sanitized.jsonl`,
+          filters: [{ name: "JSONL (sanitized, not reimportable)", extensions: ["jsonl"] }],
+        });
+        if (canceled || !filePath) return { ok: false };
+        try {
+          await writeFile(filePath, sanitized, "utf8");
+          return { ok: true, path: filePath, bytes: Buffer.byteLength(sanitized, "utf8") };
+        } catch (error) {
+          return { ok: false, error: error instanceof Error ? error.message : String(error) };
+        }
+      },
       shareBugReport: async (input: unknown) => {
         const request = (input ?? {}) as {
           sessionFile?: string | null;
@@ -1647,12 +2344,23 @@ if (!app.requestSingleInstanceLock()) {
           diagnostics?: unknown;
         };
         const fs = createNodeFsPort();
-        const transcript =
+        const raw =
           request.includeTranscript === true &&
           typeof request.sessionFile === "string" &&
           request.sessionFile.length > 0
             ? await fs.readTextFile(request.sessionFile)
             : null;
+        let transcript: string | null = null;
+        if (raw !== null) {
+          try {
+            transcript = sanitizeTranscriptJsonl(raw).jsonl;
+          } catch {
+            return {
+              ok: false,
+              error: "The session transcript could not be sanitized safely.",
+            };
+          }
+        }
         return buildBugReport(
           {
             fs,
@@ -1664,7 +2372,10 @@ if (!app.requestSingleInstanceLock()) {
             versions: request.versions ?? {},
             diagnostics: request.diagnostics ?? null,
             transcript,
+            transcriptSanitized: true,
             hint: request.hint ?? null,
+            // The summary is derived from the same sanitized projection as the
+            // attached transcript, before any field reaches the zip.
             summary: summarizeForBugReport(messagesFromJsonl(transcript ?? "")),
           },
         );
@@ -1683,9 +2394,6 @@ if (!app.requestSingleInstanceLock()) {
         get: async () => (await appState.read()).prefs,
         set: async (patch) => {
           const prefs = await appState.updatePrefs(patch);
-          // A telemetry change applies to hosts spawned from now on; a running
-          // session keeps its environment until it restarts.
-          telemetryEnabled = prefs.telemetryEnabled;
           // Terminal preferences are read synchronously when a shell spawns.
           terminalPrefs = prefs.terminal;
           // A desktop-keymap edit rebuilds the menu so its accelerators match
@@ -1721,6 +2429,7 @@ if (!app.requestSingleInstanceLock()) {
         },
       },
       sessions: sessionsIpc,
+      attachments: attachmentsIpc,
       terminal: {
         create: (windowId, input) => terminalServiceFor(windowId).create(input),
         attach: (windowId, terminalId) => terminalServiceFor(windowId).attach(terminalId),
@@ -1822,6 +2531,7 @@ if (!app.requestSingleInstanceLock()) {
         log: (projectPath, request) => gitPush.log(projectPath, request),
         headMessage: (projectPath) => gitPush.headMessage(projectPath),
         branches: (projectPath) => gitPush.branches(projectPath),
+        commitContext: (projectPath) => gitPush.commitContext(projectPath),
       },
       checkpoints: {
         // The same folder allowlist the git rail uses: one rule, one place.
@@ -2028,6 +2738,14 @@ if (!app.requestSingleInstanceLock()) {
       gitPush.dispose();
       checkpointService.dispose();
       webTabs.dispose();
+      const attachmentRuntime = await attachmentServicePromise?.catch(() => null);
+      attachmentRuntime?.disposeDelivery();
+      if (extractionSupervisorPromise) {
+        // Only dispose a supervisor that was actually created; this must not
+        // spawn a worker just to shut it down.
+        const extraction = await documentExtractionSupervisor().catch(() => null);
+        extraction?.dispose();
+      }
       // PTYs first: the terminal host owns shell processes, and a session host
       // shutdown must not race a shell that is still writing to its tab.
       await disposeTerminalServices();

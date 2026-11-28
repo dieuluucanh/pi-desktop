@@ -50,6 +50,19 @@ export function npxCliRelativePath(platform: string): string {
     : join("lib", "node_modules", "npm", "bin", "npx-cli.js");
 }
 
+/**
+ * The real Pi CLI inside the SDK package, relative to a `node_modules` root.
+ *
+ * Child agents (`explore`, the reviewer's reconnaissance) have to be a Pi CLI,
+ * not this app's host entry point: the host runs as a service (stdin is a JSONL
+ * protocol) and would either hang or exit. `dist/bundle/cli.js` is the SDK's own
+ * published `bin` target and imports only files inside the package, so it runs
+ * offline under the bundled Node.
+ */
+export function piCliRelativePath(): string {
+  return join("node_modules", "@earendil-works", "pi-coding-agent", "dist", "bundle", "cli.js");
+}
+
 export type ShimName = "pi" | "node" | "npm" | "npx";
 
 /**

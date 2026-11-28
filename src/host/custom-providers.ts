@@ -16,6 +16,7 @@ import {
   isCustomProviderAction,
   modelIdError,
   providerIdError,
+  type CustomModelInputModality,
   type CustomProviderInput,
   type CustomProviderSummary,
 } from "../shared/custom-providers";
@@ -118,7 +119,13 @@ export interface ModelsJsonProviderEntry {
   apiKey?: string;
   headers?: Record<string, string>;
   compat?: Record<string, unknown>;
-  models: Array<{ id: string; name?: string; contextWindow?: number; maxTokens?: number }>;
+  models: Array<{
+    id: string;
+    name?: string;
+    contextWindow?: number;
+    maxTokens?: number;
+    input?: CustomModelInputModality[];
+  }>;
 }
 
 /**
@@ -164,6 +171,20 @@ export function validateCustomProvider(input: CustomProviderInput): ModelsJsonPr
     if (typeof contextWindow === "number" && contextWindow > 0) entry.contextWindow = contextWindow;
     const maxTokens = (model as { maxTokens?: unknown })?.maxTokens;
     if (typeof maxTokens === "number" && maxTokens > 0) entry.maxTokens = maxTokens;
+    const input = (model as { input?: unknown })?.input;
+    if (input !== undefined) {
+      if (
+        !Array.isArray(input) ||
+        input.length < 1 ||
+        input.length > 2 ||
+        input.some((modality) => modality !== "text" && modality !== "image") ||
+        !input.includes("text") ||
+        new Set(input).size !== input.length
+      ) {
+        throw new ProviderError('model input must be "text" or "text" plus "image"');
+      }
+      entry.input = [...input] as CustomModelInputModality[];
+    }
     models.push(entry);
   }
 

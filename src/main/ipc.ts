@@ -1,7 +1,29 @@
-import { BrowserWindow, ipcMain, shell } from "electron";
-import { isHostMethod, type HostMethod } from "../shared/host-protocol";
+import { BrowserWindow, ipcMain, shell, type IpcMainInvokeEvent } from "electron";
+import {
+  ATTACHMENT_LIMITS,
+  isAttachmentId,
+  isWellFormedAttachmentText,
+  type AttachmentDeliveryRequest,
+  type AttachmentDraftGrant,
+  type AttachmentImportGrant,
+  type AttachmentImportRequest,
+  type AttachmentDescriptor,
+  type AttachmentPickResult,
+  type AttachmentPromptResult,
+  type AttachmentReadiness,
+  type AttachmentReadinessRequest,
+  type AttachmentPreview,
+  type AttachmentSnapshot,
+  type AttachmentStatusRequest,
+  type AttachmentSubmissionStatus,
+} from "../shared/attachments";
+import { isHostMethod, isPrivateHostMethod, type HostMethod } from "../shared/host-protocol";
 import { IPC, type AppInfo, type ProjectOpResponse, type SessionDeleteResult } from "../shared/ipc";
 import type { UiPrefs } from "../shared/prefs";
+import type {
+  AttachmentRetentionClearReport,
+  AttachmentStorageReport,
+} from "../shared/attachment-storage";
 import type {
   CloneProjectInput,
   CreateProjectInput,
@@ -13,9 +35,11 @@ import type {
 } from "../shared/projects";
 import {
   isControlTabId,
+  isPassiveSessionMethod,
   isTabKind,
   type CreateTabInput,
   type RetargetEditorTabsInput,
+  type SessionCancellation,
   type SessionTabsEnvelope,
   type TabKind,
 } from "../shared/session-ipc";
@@ -84,6 +108,7 @@ import {
   parseGitLogRequest,
   type GitAction,
   type GitActionResult,
+  type GitCommitContext,
   type GitCommitEntry,
   type GitDiff,
   type GitDiffRequest,
@@ -118,6 +143,8 @@ import {
 export interface IpcSessionDeps {
   /** Tab ids that currently exist; used to reject stale renderer state. */
   knownTabIds(): readonly string[];
+  /** True only for a real tab id explicitly retired by the session service. */
+  wasRecentlyClosed(tabId: string): boolean;
   list(): SessionTabsEnvelope;
   create(input: CreateTabInput): Promise<SessionTabsEnvelope>;
   close(tabId: string): Promise<SessionTabsEnvelope>;
@@ -169,6 +196,59 @@ export interface IpcTerminalDeps {
   setFocus(windowId: number, focused: boolean): void;
 }
 
+export interface IpcAttachmentDeps {
+  isTrustedSender(senderId: number): boolean;
+  openDraft(senderId: number, tabId: string, draftId?: unknown): Promise<AttachmentDraftGrant>;
+  closeDraft(senderId: number, draft: AttachmentDraftGrant): Promise<void>;
+  pick(
+    senderId: number,
+    draft: AttachmentDraftGrant,
+  ): Promise<readonly AttachmentPickResult[] | null>;
+  begin(senderId: number, input: AttachmentImportRequest): Promise<AttachmentImportGrant>;
+  append(
+    senderId: number,
+    draft: AttachmentDraftGrant,
+    token: string,
+    offset: number,
+    bytes: Uint8Array,
+  ): Promise<number>;
+  commit(senderId: number, draft: AttachmentDraftGrant, token: string): Promise<AttachmentSnapshot>;
+  cancel(senderId: number, draft: AttachmentDraftGrant, token: string): Promise<void>;
+  list(senderId: number, draft: AttachmentDraftGrant): Promise<readonly AttachmentDescriptor[]>;
+  preview(
+    senderId: number,
+    draft: AttachmentDraftGrant,
+    id: string,
+    maxBytes: number,
+  ): Promise<AttachmentPreview>;
+  remove(senderId: number, draft: AttachmentDraftGrant, id: string): Promise<void>;
+  deliver(senderId: number, input: AttachmentDeliveryRequest): Promise<AttachmentPromptResult>;
+  status(senderId: number, input: AttachmentStatusRequest): Promise<AttachmentSubmissionStatus>;
+  readiness(
+    senderId: number,
+    draft: AttachmentDraftGrant,
+    attachmentIds: readonly string[],
+    text: string,
+  ): Promise<AttachmentReadiness>;
+  storage(): Promise<AttachmentStorageReport | null>;
+  clearStorage(): Promise<AttachmentRetentionClearReport>;
+  exportBundle(
+    senderId: number,
+    tabId: string,
+    includeObjects: boolean,
+  ): Promise<{ ok: boolean; path?: string; assets?: number; objects?: number; error?: string }>;
+  importBundle(
+    senderId: number,
+    tabId: string,
+  ): Promise<{
+    ok: boolean;
+    path?: string;
+    originals?: number;
+    representations?: number;
+    error?: string;
+  }>;
+}
+
 export interface IpcTuiDeps {
   /**
    * Records (or clears, with `null`) the extension TUI tab that owns a window's
@@ -189,6 +269,14 @@ export interface IpcDependencies {
   shareSession: (sessionFile: unknown) => Promise<unknown>;
   /** `/bug`: build the local zip. */
   shareBugReport: (input: unknown) => Promise<unknown>;
+  /** Write the attachment-private transcript to a user-chosen path. */
+  exportSanitizedTranscript: (sessionFile: string) => Promise<{
+    ok: boolean;
+    path?: string;
+    bytes?: number;
+    error?: string;
+    detail?: string;
+  }>;
   /** Open the draft in the OS editor (plan step 21). */
   openEditor: (draft: unknown, setting: unknown) => Promise<unknown>;
   /** Reveals a path in the OS file manager; returns false for invalid input. */
@@ -202,6 +290,8 @@ export interface IpcDependencies {
     set: (patch: unknown) => Promise<UiPrefs>;
   };
   sessions: IpcSessionDeps;
+  /** File import, scoped to the app's trusted main renderer and a live tab. */
+  attachments: IpcAttachmentDeps;
   /** Native terminal surface (2026-11-05 terminal plan). */
   terminal: IpcTerminalDeps;
   /** Extension TUI surface focus (2026-11-18 questionnaire paste plan). */
@@ -277,6 +367,7 @@ export interface IpcDependencies {
     log(projectPath: string, request: GitLogRequest): Promise<GitCommitEntry[]>;
     headMessage(projectPath: string): Promise<string | null>;
     branches(projectPath: string): Promise<string[]>;
+    commitContext(projectPath: string): Promise<GitCommitContext>;
   };
   /** Folder checkpoints (git-checkpoint plan step 21). */
   checkpoints: {
@@ -318,6 +409,17 @@ export interface IpcDependencies {
     deleteBackup(tabId: string): Promise<WorkspaceResult<boolean>>;
     format(input: WorkspaceFormatRequest): Promise<WorkspaceResult<WorkspaceFormatResult>>;
   };
+}
+
+function requireAttachmentSender(deps: IpcDependencies, event: IpcMainInvokeEvent): number {
+  if (
+    !event.senderFrame ||
+    event.senderFrame !== event.sender.mainFrame ||
+    !deps.attachments.isTrustedSender(event.sender.id)
+  ) {
+    throw new Error("attachments: untrusted renderer");
+  }
+  return event.sender.id;
 }
 
 const MAX_TITLE_LENGTH = 200;
@@ -495,11 +597,7 @@ function parseRetargetEditorTabs(value: unknown): RetargetEditorTabsInput {
   return { fromProjectPath, fromPath, toProjectPath, toPath, kind: record.kind };
 }
 
-/**
- * Rejects a tab id that is missing, malformed, or no longer open. The control
- * host is a valid address for `session.request` only (plan D-A3) — it is never
- * a tab, so activation/close still require a live tab.
- */
+/** Rejects a missing, malformed, or no-longer-live tab id. */
 function requireTabId(deps: IpcDependencies, value: unknown): string {
   if (typeof value !== "string" || value.length === 0) {
     throw new Error("session: a tab id is required");
@@ -573,6 +671,105 @@ function parseProjectSettingsToggle(value: unknown): ProjectSettingsToggleInput 
 }
 
 /** Validates the `web:open` input: a permitted URL, an optional folder and link. */
+function parseAttachmentDelivery(value: unknown): AttachmentDeliveryRequest {
+  const input = asRecord(value);
+  const draft = asRecord(input.draft);
+  const ids = input.attachmentIds;
+  const grantKeys = Object.keys(draft);
+  if (
+    Object.keys(input).length !== 6 ||
+    !Object.keys(input).every((key) =>
+      ["draft", "attachmentIds", "turnId", "attemptId", "explicitRetry", "text"].includes(key),
+    ) ||
+    grantKeys.length !== 3 ||
+    !grantKeys.every((key) => ["tabId", "draftId", "token"].includes(key)) ||
+    typeof draft.tabId !== "string" ||
+    !isAttachmentId(draft.draftId) ||
+    !isAttachmentId(draft.token) ||
+    !Array.isArray(ids) ||
+    ids.length === 0 ||
+    ids.length > ATTACHMENT_LIMITS.filesPerDraft ||
+    ids.some((id) => !isAttachmentId(id)) ||
+    new Set(ids).size !== ids.length ||
+    !isAttachmentId(input.turnId) ||
+    !isAttachmentId(input.attemptId) ||
+    typeof input.explicitRetry !== "boolean" ||
+    typeof input.text !== "string" ||
+    !isWellFormedAttachmentText(input.text)
+  ) {
+    throw new Error("attachments: invalid delivery request");
+  }
+  return {
+    draft: { tabId: draft.tabId, draftId: draft.draftId, token: draft.token },
+    attachmentIds: ids,
+    turnId: input.turnId,
+    attemptId: input.attemptId,
+    explicitRetry: input.explicitRetry,
+    text: input.text,
+  };
+}
+
+function parseAttachmentStatus(value: unknown): AttachmentStatusRequest {
+  const input = asRecord(value);
+  const draft = asRecord(input.draft);
+  const ids = input.attachmentIds;
+  const grantKeys = Object.keys(draft);
+  if (
+    Object.keys(input).length !== 3 ||
+    !Object.keys(input).every((key) => ["draft", "text", "attachmentIds"].includes(key)) ||
+    grantKeys.length !== 3 ||
+    !grantKeys.every((key) => ["tabId", "draftId", "token"].includes(key)) ||
+    typeof draft.tabId !== "string" ||
+    !isAttachmentId(draft.draftId) ||
+    !isAttachmentId(draft.token) ||
+    typeof input.text !== "string" ||
+    !isWellFormedAttachmentText(input.text) ||
+    input.text.length > 4 * 1024 * 1024 ||
+    !Array.isArray(ids) ||
+    ids.length > ATTACHMENT_LIMITS.filesPerDraft ||
+    ids.some((id) => !isAttachmentId(id)) ||
+    new Set(ids).size !== ids.length
+  ) {
+    throw new Error("attachments: invalid status request");
+  }
+  return {
+    draft: { tabId: draft.tabId, draftId: draft.draftId, token: draft.token },
+    text: input.text,
+    attachmentIds: ids as string[],
+  };
+}
+
+function parseAttachmentReadiness(value: unknown): AttachmentReadinessRequest {
+  const input = asRecord(value);
+  const draft = asRecord(input.draft);
+  const ids = input.attachmentIds;
+  const grantKeys = Object.keys(draft);
+  if (
+    Object.keys(input).length !== 3 ||
+    !Object.keys(input).every((key) => ["draft", "text", "attachmentIds"].includes(key)) ||
+    grantKeys.length !== 3 ||
+    !grantKeys.every((key) => ["tabId", "draftId", "token"].includes(key)) ||
+    typeof draft.tabId !== "string" ||
+    !isAttachmentId(draft.draftId) ||
+    !isAttachmentId(draft.token) ||
+    typeof input.text !== "string" ||
+    !isWellFormedAttachmentText(input.text) ||
+    input.text.length > 4 * 1024 * 1024 ||
+    !Array.isArray(ids) ||
+    ids.length === 0 ||
+    ids.length > ATTACHMENT_LIMITS.filesPerDraft ||
+    ids.some((id) => !isAttachmentId(id)) ||
+    new Set(ids).size !== ids.length
+  ) {
+    throw new Error("attachments: invalid readiness request");
+  }
+  return {
+    draft: { tabId: draft.tabId, draftId: draft.draftId, token: draft.token },
+    text: input.text,
+    attachmentIds: ids as string[],
+  };
+}
+
 export function parseWebOpen(value: unknown): WebTabOpenInput {
   const record = asRecord(value);
   const url = sanitizeWebUrl(record.url);
@@ -589,16 +786,33 @@ export function parseWebOpen(value: unknown): WebTabOpenInput {
   return input;
 }
 
-/** Validates a `session.request` envelope: a live tab and a real host method. */
+/** Validates a `session.request` envelope and its method before stale-id classification. */
 function parseSessionRequest(
   deps: IpcDependencies,
   value: unknown,
-): { tabId: string; method: HostMethod; params?: unknown } {
+): { tabId: string; method: HostMethod; params?: unknown } | SessionCancellation {
   const record = asRecord(value);
-  const tabId = requireTabId(deps, record.tabId);
+  const tabId = record.tabId;
+  if (typeof tabId !== "string" || tabId.length === 0) {
+    throw new Error("session: a tab id is required");
+  }
   const method = record.method;
   if (!isHostMethod(method)) {
     throw new Error(`session: unsupported host method ${String(method)}`);
+  }
+  // A generic request carries no authenticated draft grant or host pin. The
+  // private attachment methods must be rejected before any early return.
+  if (method === "attachments.prompt" || isPrivateHostMethod(method)) {
+    throw new Error("session: attachment delivery requires an authorized route");
+  }
+  if (isControlTabId(tabId)) {
+    return "params" in record ? { tabId, method, params: record.params } : { tabId, method };
+  }
+  if (!deps.sessions.knownTabIds().includes(tabId)) {
+    if (isPassiveSessionMethod(method) && deps.sessions.wasRecentlyClosed(tabId)) {
+      return { cancelled: { reason: "tab-closed", tabId } };
+    }
+    throw new Error(`session: unknown tab ${tabId}`);
   }
   return "params" in record ? { tabId, method, params: record.params } : { tabId, method };
 }
@@ -736,6 +950,9 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
     deps.shareSession(sessionFile),
   );
   ipcMain.handle(IPC.shareBugReport, (_event, input: unknown) => deps.shareBugReport(input));
+  ipcMain.handle(IPC.shareExportSanitized, (_event, sessionFile: unknown) =>
+    deps.exportSanitizedTranscript(typeof sessionFile === "string" ? sessionFile : ""),
+  );
   ipcMain.handle(IPC.editorOpen, (_event, draft: unknown, setting: unknown) =>
     deps.openEditor(draft, setting),
   );
@@ -745,14 +962,114 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
   ipcMain.handle(IPC.prefsGet, () => deps.prefs.get());
   ipcMain.handle(IPC.prefsSet, (_event, patch: unknown) => deps.prefs.set(patch));
 
+  ipcMain.handle(IPC.attachmentsOpenDraft, (event, tabId: unknown, draftId: unknown) =>
+    deps.attachments.openDraft(
+      requireAttachmentSender(deps, event),
+      requireRealTabId(deps, tabId),
+      draftId,
+    ),
+  );
+  ipcMain.handle(IPC.attachmentsCloseDraft, (event, draft: unknown) =>
+    deps.attachments.closeDraft(
+      requireAttachmentSender(deps, event),
+      draft as AttachmentDraftGrant,
+    ),
+  );
+  ipcMain.handle(IPC.attachmentsPick, (event, draft: unknown) =>
+    deps.attachments.pick(requireAttachmentSender(deps, event), draft as AttachmentDraftGrant),
+  );
+  ipcMain.handle(IPC.attachmentsBegin, (event, input: unknown) =>
+    deps.attachments.begin(requireAttachmentSender(deps, event), input as AttachmentImportRequest),
+  );
+  ipcMain.handle(
+    IPC.attachmentsAppend,
+    (event, draft: unknown, token: unknown, offset: unknown, bytes: unknown) =>
+      deps.attachments.append(
+        requireAttachmentSender(deps, event),
+        draft as AttachmentDraftGrant,
+        token as string,
+        offset as number,
+        bytes as Uint8Array,
+      ),
+  );
+  ipcMain.handle(IPC.attachmentsCommit, (event, draft: unknown, token: unknown) =>
+    deps.attachments.commit(
+      requireAttachmentSender(deps, event),
+      draft as AttachmentDraftGrant,
+      token as string,
+    ),
+  );
+  ipcMain.handle(IPC.attachmentsCancel, (event, draft: unknown, token: unknown) =>
+    deps.attachments.cancel(
+      requireAttachmentSender(deps, event),
+      draft as AttachmentDraftGrant,
+      token as string,
+    ),
+  );
+  ipcMain.handle(IPC.attachmentsList, (event, draft: unknown) =>
+    deps.attachments.list(requireAttachmentSender(deps, event), draft as AttachmentDraftGrant),
+  );
+  ipcMain.handle(IPC.attachmentsPreview, (event, draft: unknown, id: unknown, maxBytes: unknown) =>
+    deps.attachments.preview(
+      requireAttachmentSender(deps, event),
+      draft as AttachmentDraftGrant,
+      id as string,
+      maxBytes as number,
+    ),
+  );
+  ipcMain.handle(IPC.attachmentsRemove, (event, draft: unknown, id: unknown) =>
+    deps.attachments.remove(
+      requireAttachmentSender(deps, event),
+      draft as AttachmentDraftGrant,
+      id as string,
+    ),
+  );
+  ipcMain.handle(IPC.attachmentsSubmit, (event, input: unknown) => {
+    const senderId = requireAttachmentSender(deps, event);
+    const request = parseAttachmentDelivery(input);
+    return deps.attachments.deliver(senderId, request);
+  });
+  ipcMain.handle(IPC.attachmentsStatus, (event, input: unknown) => {
+    const senderId = requireAttachmentSender(deps, event);
+    return deps.attachments.status(senderId, parseAttachmentStatus(input));
+  });
+  ipcMain.handle(IPC.attachmentsReadiness, (event, input: unknown) => {
+    const senderId = requireAttachmentSender(deps, event);
+    const request = parseAttachmentReadiness(input);
+    return deps.attachments.readiness(senderId, request.draft, request.attachmentIds, request.text);
+  });
+  ipcMain.handle(IPC.attachmentsStorage, (event) => {
+    requireAttachmentSender(deps, event);
+    return deps.attachments.storage();
+  });
+  ipcMain.handle(IPC.attachmentsClearStorage, (event) => {
+    requireAttachmentSender(deps, event);
+    return deps.attachments.clearStorage();
+  });
+  ipcMain.handle(IPC.attachmentsExportBundle, (event, input: unknown) => {
+    const senderId = requireAttachmentSender(deps, event);
+    const record = input && typeof input === "object" ? (input as Record<string, unknown>) : {};
+    const tabId = requireRealTabId(deps, record.tabId);
+    return deps.attachments.exportBundle(senderId, tabId, record.includeObjects === true);
+  });
+  ipcMain.handle(IPC.attachmentsImportBundle, (event, input: unknown) => {
+    const senderId = requireAttachmentSender(deps, event);
+    const record = input && typeof input === "object" ? (input as Record<string, unknown>) : {};
+    return deps.attachments.importBundle(senderId, requireRealTabId(deps, record.tabId));
+  });
+
   ipcMain.handle(IPC.sessionTabs, () => deps.sessions.list());
   ipcMain.handle(IPC.sessionRestore, () => deps.sessions.restore());
   ipcMain.handle(IPC.sessionCreate, (_event, input: unknown) =>
     deps.sessions.create(parseCreateTab(input)),
   );
-  ipcMain.handle(IPC.sessionClose, (_event, tabId: unknown) =>
-    deps.sessions.close(requireTabId(deps, tabId)),
-  );
+  ipcMain.handle(IPC.sessionClose, (_event, tabId: unknown) => {
+    if (typeof tabId !== "string" || tabId.length === 0) {
+      throw new Error("session: a tab id is required");
+    }
+    if (isControlTabId(tabId)) throw new Error("session: the control host is not a tab");
+    return deps.sessions.close(tabId);
+  });
   ipcMain.handle(IPC.sessionCloseOthers, (_event, tabId: unknown) =>
     deps.sessions.closeOthers(requireTabId(deps, tabId)),
   );
@@ -798,9 +1115,11 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
   ipcMain.handle(IPC.sessionStop, (_event, tabId: unknown) =>
     deps.sessions.stop(requireTabId(deps, tabId)),
   );
-  ipcMain.handle(IPC.sessionRequest, (_event, input: unknown) =>
-    deps.sessions.request(parseSessionRequest(deps, input)),
-  );
+  ipcMain.handle(IPC.sessionRequest, (_event, input: unknown) => {
+    const parsed = parseSessionRequest(deps, input);
+    if ("cancelled" in parsed) return parsed;
+    return deps.sessions.request(parsed);
+  });
   ipcMain.handle(IPC.sessionDelete, (_event, sessionFile: unknown) => {
     if (typeof sessionFile !== "string" || sessionFile.length === 0) {
       return { ok: false, error: "session: a session file is required" } as SessionDeleteResult;
@@ -967,6 +1286,9 @@ export function registerIpcHandlers(deps: IpcDependencies): void {
   );
   ipcMain.handle(IPC.gitBranches, async (_event, projectPath: unknown) =>
     deps.git.branches(await deps.git.resolveProjectPath(projectPath)),
+  );
+  ipcMain.handle(IPC.gitCommitContext, async (_event, projectPath: unknown) =>
+    deps.git.commitContext(await deps.git.resolveProjectPath(projectPath)),
   );
 
   // Folder checkpoints (git-checkpoint plan step 21). Same two rules as git: the

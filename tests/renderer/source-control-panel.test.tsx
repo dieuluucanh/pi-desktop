@@ -1,6 +1,8 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SourceControlPanel } from "../../src/renderer/src/rail/SourceControlPanel";
+import { recallScroll, resetScrollMemory } from "../../src/renderer/src/rail/scroll-memory";
+import { blockTestId } from "../../src/renderer/src/rail/source-control-view";
 import { useAppStore } from "../../src/renderer/src/state/app-store";
 import { emptyGitSnapshot, type GitRepoInfo, type GitSnapshot } from "../../src/shared/git";
 import { DEFAULT_RAIL_SPLIT, MIN_BLOCK_PX } from "../../src/shared/rail";
@@ -48,7 +50,7 @@ function snapshot(overrides: Partial<GitSnapshot> = {}): GitSnapshot {
   };
 }
 
-function seed(value: GitSnapshot, split = DEFAULT_RAIL_SPLIT): void {
+function seed(value: GitSnapshot, split = DEFAULT_RAIL_SPLIT, projectPath = PROJECT): void {
   installBridge({ git: value });
   useAppStore.setState({
     prefs: {
@@ -56,7 +58,7 @@ function seed(value: GitSnapshot, split = DEFAULT_RAIL_SPLIT): void {
       drafts: {},
       rail: { ...DEFAULT_PREFS.rail, split: { ...split } },
     },
-    git: { [PROJECT]: value },
+    git: { [projectPath]: value },
     gitErrors: {},
     gitLog: {},
   });
@@ -68,7 +70,52 @@ function flexOf(id: string): number {
   return Number.parseFloat(style.split(" ")[0] ?? "0");
 }
 
+interface Geometry {
+  read(): number;
+  write(value: number): void;
+}
+
+/**
+ * jsdom has no layout, so give one scroller a fixed, clamping geometry before
+ * driving the hook (the technique `rail-scroll-memory.test.tsx` uses). Keep
+ * whatever a restore already wrote, so priming does not erase it.
+ */
+function primeGeometry(element: HTMLElement, content = 1_000): Geometry {
+  const viewport = 400;
+  const max = (): number => Math.max(0, content - viewport);
+  let top = Math.max(0, Math.min(element.scrollTop, max()));
+  Object.defineProperty(element, "scrollHeight", { configurable: true, value: content });
+  Object.defineProperty(element, "clientHeight", { configurable: true, value: viewport });
+  Object.defineProperty(element, "scrollTop", {
+    configurable: true,
+    get: () => top,
+    set: (value: number) => {
+      top = Math.max(0, Math.min(value, max()));
+    },
+  });
+  return {
+    read: () => top,
+    write: (value) => {
+      top = Math.max(0, Math.min(value, max()));
+    },
+  };
+}
+
+async function nextFrame(): Promise<void> {
+  await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+}
+
+/** Let the hook's rAF-throttled save/restore work run, inside `act`. */
+async function settle(frames = 2): Promise<void> {
+  for (let index = 0; index < frames; index += 1) {
+    await act(async () => {
+      await nextFrame();
+    });
+  }
+}
+
 beforeEach(() => {
+  resetScrollMemory();
   seed(snapshot());
 });
 
@@ -168,6 +215,66 @@ describe("scrolling", () => {
     const block = screen.getByTestId("source-control-block");
     expect(block).toHaveClass("overflow-y-auto");
     expect(within(block).getByTestId("commit-box")).toBeInTheDocument();
+  });
+});
+
+describe("per-folder scroll memory", () => {
+  const OTHER = "/work/other";
+  const LOADING = "/work/loading";
+
+  function changesScroller(): HTMLElement {
+    return screen.getByTestId(blockTestId("changes"));
+  }
+
+  /** Mount the panel, scroll Changes to `top`, let the save land, then unmount. */
+  async function saveChangesOffset(top: number): Promise<void> {
+    const view = render(<SourceControlPanel projectPath={PROJECT} />);
+    const geometry = primeGeometry(changesScroller());
+    geometry.write(top);
+    fireEvent.scroll(changesScroller());
+    await settle();
+    expect(recallScroll(`changes:${PROJECT}`)).toBe(top);
+    view.unmount();
+  }
+
+  it("restores a folder's Changes offset without carrying it to another folder", async () => {
+    await saveChangesOffset(480);
+
+    // A folder with no snapshot yet starts at the top, and the first folder's
+    // entry is untouched — isolation, not a shared offset.
+    const other = render(<SourceControlPanel projectPath={OTHER} />);
+    const otherGeometry = primeGeometry(changesScroller());
+    await settle();
+    expect(useAppStore.getState().git[OTHER]).toBeUndefined();
+    expect(otherGeometry.read()).toBe(0);
+    expect(recallScroll(`changes:${PROJECT}`)).toBe(480);
+    other.unmount();
+
+    // Back to the first folder, with its snapshot: the offset is restored.
+    render(<SourceControlPanel projectPath={PROJECT} />);
+    const restored = primeGeometry(changesScroller());
+    await waitFor(() => expect(restored.read()).toBe(480));
+  });
+
+  it("does not save while the folder has no snapshot", async () => {
+    expect(useAppStore.getState().git[LOADING]).toBeUndefined();
+
+    const view = render(<SourceControlPanel projectPath={LOADING} />);
+    const geometry = primeGeometry(changesScroller());
+    geometry.write(300);
+    fireEvent.scroll(changesScroller());
+    await settle();
+
+    // The loading block has no list to measure, so nothing was written.
+    expect(recallScroll(`changes:${LOADING}`)).toBeUndefined();
+    view.unmount();
+
+    // The snapshot arriving does not invent an offset: nothing was saved.
+    seed(snapshot({ projectPath: LOADING }), DEFAULT_RAIL_SPLIT, LOADING);
+    render(<SourceControlPanel projectPath={LOADING} />);
+    const after = primeGeometry(changesScroller());
+    await settle();
+    expect(after.read()).toBe(0);
   });
 });
 

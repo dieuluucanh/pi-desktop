@@ -9,6 +9,8 @@
  */
 
 import type { TrustAnswer } from "./projects";
+import type { SessionBootstrapEntry } from "./related-sessions";
+import type { ArchivedRelatedSession } from "./related-session-archive";
 import { sanitizeWebUrl, webTabTitle } from "./web-tabs";
 import { isWorkspaceRelativePath, workspaceBasename, type WorkspaceEntryKind } from "./workspace";
 
@@ -103,6 +105,11 @@ export interface TabRecord {
    * transcript uses it to link a review back to the session that started it.
    */
   sessionTabId?: string | null;
+  /**
+   * The session that opened this related session (orchestrator step 12). A
+   * child tab is a normal tab; this link only drives navigation and ownership.
+   */
+  relatedParentTabId?: string | null;
   /** Last failure, surfaced inline in the tab instead of only in a log. */
   error?: string;
   /** Why the host was stopped; set only while `status` is `stopped`/`crashed`. */
@@ -173,12 +180,64 @@ export function isSessionTab(tab: TabRecord): tab is SessionTab {
  * already open, so that tab was activated instead of a second one being minted
  * (one JSONL must never have two live managers).
  */
+export type TabClosedCancellation = {
+  reason: "tab-closed";
+  tabId: string;
+};
+
+/** Explicit lifecycle cancellation data; unlike Error fields this survives Electron IPC. */
+export type SessionCancellation = { cancelled: TabClosedCancellation };
+
+export function isTabClosedCancellation(value: unknown): value is SessionCancellation {
+  if (!value || typeof value !== "object") return false;
+  const cancelled = (value as { cancelled?: unknown }).cancelled;
+  return (
+    !!cancelled &&
+    typeof cancelled === "object" &&
+    (cancelled as { reason?: unknown }).reason === "tab-closed" &&
+    typeof (cancelled as { tabId?: unknown }).tabId === "string" &&
+    (cancelled as { tabId: string }).tabId.length > 0
+  );
+}
+
+/** Methods that are passive reads/refreshes and must never wake a stopped host. */
+export const PASSIVE_SESSION_METHODS: ReadonlySet<string> = new Set([
+  "messages.get",
+  "entries.get",
+  "tree.get",
+  "stats.get",
+  "commands.list",
+  "commands.complete",
+  "shortcuts.list",
+  "files.list",
+  "oi.state",
+  "oi.editorConsumed",
+  "tui.state",
+  "tui.resize",
+  "model.available",
+  "render.request",
+  "render.markdown",
+  "contributions.state",
+  "composer.current",
+  "composer.status",
+]);
+
+export const isPassiveSessionMethod = (method: string): boolean =>
+  PASSIVE_SESSION_METHODS.has(method);
+
 export type SessionTabsEnvelope = {
   tabs: TabRecord[];
   activeTabId: string | null;
   revision?: number;
   selectionSeq?: number;
   reusedTabId?: string;
+  /**
+   * Bounded archive of related sessions whose tab is closed (orchestrator step
+   * 13). Navigation metadata only; the transcript stays in the session JSONL.
+   */
+  relatedArchive?: ArchivedRelatedSession[];
+  /** Present only when an admitted lifecycle operation was explicitly closed. */
+  cancelled?: TabClosedCancellation;
 };
 
 /**
@@ -239,8 +298,25 @@ export interface CreateTabInput {
   sessionTabId?: string;
   /** The shell profile to open when `kind` is `terminal`. */
   profileId?: string;
+  /**
+   * Internal only (orchestrator step 12): a tab opened on behalf of another
+   * session. `parseCreateTab` strips it from IPC input, so the renderer cannot
+   * forge a parent; the main-process related-session service sets it.
+   */
+  related?: {
+    parentTabId: string;
+    relation: "child" | "sibling";
+    dedupeKey: string;
+  };
+  /**
+   * Internal only: bounded entries written by the child host before its
+   * `session_start`. Never accepted from the renderer.
+   */
+  bootstrap?: SessionBootstrapEntry[];
   /** Select the new tab (default true). False opens a background web tab. */
   activate?: boolean;
+  /** Internal only: a related session's own title (orchestrator step 12). */
+  title?: string;
   model?: string;
   thinking?: string;
   /**
@@ -342,6 +418,9 @@ export function sanitizeTabRecord(value: unknown): TabRecord | null {
     lastActiveAt: numberOr(source.lastActiveAt, 0),
     model: stringOrNull(source.model),
     ...(kind === "web" ? { url, sessionTabId: stringOrNull(source.sessionTabId) } : {}),
+    ...(stringOrNull(source.relatedParentTabId)
+      ? { relatedParentTabId: stringOrNull(source.relatedParentTabId) }
+      : {}),
     ...(kind === "editor" ? { filePath } : {}),
     ...(kind === "terminal"
       ? {

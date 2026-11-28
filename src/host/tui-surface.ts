@@ -27,6 +27,7 @@ import {
   type TuiFrame,
   type TuiSlot,
   type TuiInputResult,
+  type TuiSurfaceLayer,
   type TuiSurfaceSnapshot,
 } from "../shared/tui-surface";
 import type { HostMethod } from "../shared/host-protocol";
@@ -35,7 +36,7 @@ import type { HostHandler } from "./service";
 
 /** The component surface Pi's components implement (a structural `Component`). */
 export interface SurfaceComponent {
-  render(width: number): string[];
+  render(width: number): readonly string[];
   handleInput?(data: string): void;
   invalidate?(): void;
   dispose?(): void;
@@ -198,7 +199,15 @@ export interface TuiSurfacePort {
   dispose(reason: string): void;
 }
 
+interface MountedCustom {
+  /** Stable while this component is mounted; a remount mints a new id. */
+  id: string;
+  component: SurfaceComponent;
+}
+
 interface OverlayEntry {
+  /** Stable while this overlay is mounted (the renderer keys its layer). */
+  id: string;
   component: SurfaceComponent;
   options: SurfaceOverlayOptions;
   hidden: boolean;
@@ -339,8 +348,9 @@ export function createTuiSurface(options: TuiSurfaceOptions): TuiSurfacePort {
 
   let headerComponent: SurfaceComponent | null = null;
   let footerComponent: SurfaceComponent | null = null;
-  let customComponent: SurfaceComponent | null = null;
+  let customMount: MountedCustom | null = null;
   let focusedComponent: SurfaceComponent | null = null;
+  let surfaceIdCounter = 0;
   const overlays: OverlayEntry[] = [];
   const widgetsAbove = new Map<string, SurfaceComponent>();
   const widgetsBelow = new Map<string, SurfaceComponent>();
@@ -353,6 +363,8 @@ export function createTuiSurface(options: TuiSurfaceOptions): TuiSurfacePort {
   let disposed = false;
   const inputListeners = new Set<(data: string) => SurfaceInputResult>();
   const pendingCustom = new Set<(result: unknown) => void>();
+
+  const nextSurfaceId = (kind: "custom" | "overlay"): string => `${kind}-${++surfaceIdCounter}`;
 
   const isOverlayVisible = (entry: OverlayEntry): boolean => {
     if (entry.hidden) return false;
@@ -436,59 +448,73 @@ export function createTuiSurface(options: TuiSurfaceOptions): TuiSurfacePort {
         .filter((frame): frame is TuiFrame => frame !== null);
     const widgetsAboveFrames = widgetFrames(widgetsAbove);
     const widgetsBelowFrames = widgetFrames(widgetsBelow);
-    const topOverlay = visibleOverlays().at(-1);
-    if (topOverlay) {
-      const { width, maxHeight } = resolveOverlayLayout(topOverlay.options, 0, cols, rows);
-      const lines = renderComponent(topOverlay.component, width);
+
+    // The stack is every mounted keyboard-bearing component, bottom-to-top:
+    // the base `custom` first, then overlays in their focus order. Pi composites
+    // the same way, so a questionnaire overlay keeps the review pane visible
+    // underneath instead of replacing it (2026-11-22 parity row 28).
+    const layers: TuiSurfaceLayer[] = [];
+    if (customMount) {
+      const frame = makeFrame(customMount.component, cols);
+      if (frame) {
+        layers.push({
+          id: customMount.id,
+          overlay: false,
+          bounds: null,
+          focused: customMount.component === focusedComponent,
+          frame,
+        });
+      }
+    }
+    for (const entry of visibleOverlays()) {
+      const { width, maxHeight } = resolveOverlayLayout(entry.options, 0, cols, rows);
+      const lines = renderComponent(entry.component, width);
       const clipped = maxHeight !== undefined ? lines.slice(0, maxHeight) : lines;
-      const layout = resolveOverlayLayout(topOverlay.options, clipped.length, cols, rows);
-      topOverlay.bounds = {
+      const layout = resolveOverlayLayout(entry.options, clipped.length, cols, rows);
+      entry.bounds = {
         row: layout.row,
         col: layout.col,
         width: layout.width,
         height: clipped.length,
       };
-      const cursor = topOverlay.component === focusedComponent ? extractCursor(clipped) : null;
-      return {
-        active: true,
+      const cursor = entry.component === focusedComponent ? extractCursor(clipped) : null;
+      layers.push({
+        id: entry.id,
         overlay: true,
-        bounds: topOverlay.bounds,
-        focus: "custom",
-        custom: {
+        bounds: entry.bounds,
+        focused: entry.component === focusedComponent,
+        frame: {
           seq: ++frameSeq,
           width: layout.width,
           height: clipped.length,
           lines: clipped,
           cursor,
         },
-        footer: makeFrame(footerComponent, cols),
-        header: makeFrame(headerComponent, cols),
-        widgetsAbove: widgetsAboveFrames,
-        widgetsBelow: widgetsBelowFrames,
-      };
+      });
     }
-    for (const entry of overlays) entry.bounds = undefined;
-    const custom = makeFrame(customComponent, cols);
+    for (const entry of overlays) {
+      if (!isOverlayVisible(entry)) entry.bounds = undefined;
+    }
+
+    const top = layers.at(-1) ?? null;
     const footer = makeFrame(footerComponent, cols);
     const header = makeFrame(headerComponent, cols);
-    const focus: TuiSlot | null =
-      focusedComponent === null ? null : focusedComponent === customComponent ? "custom" : null;
+    // The legacy single-slot view mirrors the top of the stack; an older
+    // renderer therefore renders the same surface it always did.
+    const focus: TuiSlot | null = focusedComponent === null || top === null ? null : "custom";
     return {
       active: Boolean(
-        custom ||
-        footer ||
-        header ||
-        widgetsAboveFrames.length > 0 ||
-        widgetsBelowFrames.length > 0,
+        top || footer || header || widgetsAboveFrames.length > 0 || widgetsBelowFrames.length > 0,
       ),
-      overlay: false,
-      bounds: null,
+      overlay: top?.overlay ?? false,
+      bounds: top?.bounds ?? null,
       focus,
-      custom,
+      custom: top?.frame ?? null,
       footer,
       header,
       widgetsAbove: widgetsAboveFrames,
       widgetsBelow: widgetsBelowFrames,
+      layers,
     };
   };
 
@@ -545,7 +571,7 @@ export function createTuiSurface(options: TuiSurfaceOptions): TuiSurfacePort {
       setProgress: () => undefined,
     },
     get children(): SurfaceComponent[] {
-      return [headerComponent, customComponent, footerComponent].filter(
+      return [headerComponent, customMount?.component ?? null, footerComponent].filter(
         (component): component is SurfaceComponent => component !== null,
       );
     },
@@ -558,7 +584,7 @@ export function createTuiSurface(options: TuiSurfaceOptions): TuiSurfacePort {
       flush();
     },
     invalidate: () => {
-      for (const component of [headerComponent, footerComponent, customComponent]) {
+      for (const component of [headerComponent, footerComponent, customMount?.component ?? null]) {
         component?.invalidate?.();
       }
       for (const component of widgetsAbove.values()) component.invalidate?.();
@@ -576,6 +602,7 @@ export function createTuiSurface(options: TuiSurfaceOptions): TuiSurfacePort {
     getFocusedComponent: () => focusedComponent,
     showOverlay: (component, overlayOptions) => {
       const entry: OverlayEntry = {
+        id: nextSurfaceId("overlay"),
         component,
         options: overlayOptions ?? {},
         hidden: false,
@@ -696,10 +723,10 @@ export function createTuiSurface(options: TuiSurfaceOptions): TuiSurfacePort {
   const clearSlots = (): void => {
     disposeComponent(headerComponent);
     disposeComponent(footerComponent);
-    disposeComponent(customComponent);
+    disposeComponent(customMount?.component ?? null);
     headerComponent = null;
     footerComponent = null;
-    customComponent = null;
+    customMount = null;
     for (const component of widgetsAbove.values()) disposeComponent(component);
     for (const component of widgetsBelow.values()) disposeComponent(component);
     widgetsAbove.clear();
@@ -731,7 +758,7 @@ export function createTuiSurface(options: TuiSurfaceOptions): TuiSurfacePort {
             overlayHandle.hide();
           } else if (component) {
             const wasFocused = focusedComponent === component;
-            if (customComponent === component) customComponent = null;
+            if (customMount?.component === component) customMount = null;
             if (wasFocused) setComponentFocus(null);
             disposeComponent(component);
           }
@@ -759,8 +786,8 @@ export function createTuiSurface(options: TuiSurfaceOptions): TuiSurfacePort {
               overlayHandle = tui.showOverlay(created, overlayOptions);
               customOptions.onHandle?.(overlayHandle);
             } else {
-              disposeComponent(customComponent);
-              customComponent = created;
+              disposeComponent(customMount?.component ?? null);
+              customMount = { id: nextSurfaceId("custom"), component: created };
               setComponentFocus(created);
             }
             scheduleRender();
@@ -815,6 +842,11 @@ export function createTuiSurface(options: TuiSurfaceOptions): TuiSurfacePort {
     },
 
     reset() {
+      // A rebind replaces the session's extensions: their pending `custom()`
+      // promises must settle instead of hanging forever in the old runner
+      // (2026-11-22 parity row 28, stale-surface cleanup).
+      for (const finish of [...pendingCustom]) finish(undefined);
+      pendingCustom.clear();
       clearSlots();
       scheduleRender();
     },

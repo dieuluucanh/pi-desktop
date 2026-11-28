@@ -81,6 +81,13 @@ describe("createSdkSettingsPort", () => {
     expect(await readJson(globalPath())).toMatchObject({ theme: "light" });
   });
 
+  it("writes a global notice through Pi's per-key setter and persists it", async () => {
+    const port = makePort();
+    await port.write(null, "notices.cacheMisses", true, "global");
+    expect((await port.read(null)).global).toMatchObject({ notices: { cacheMisses: true } });
+    expect(await readJson(globalPath())).toMatchObject({ notices: { cacheMisses: true } });
+  });
+
   it("writes and deletes a nested key through the document editor", async () => {
     const port = makePort();
     await port.write(null, "compaction.reserveTokens", 8192, "global");

@@ -154,6 +154,32 @@ describe("host service dispatch", () => {
     });
   });
 
+  it("reports null when the composition root wired no attachment support", async () => {
+    const host = harness();
+    await host.request(1, "host.hello");
+    expect(host.lastResult()).toMatchObject({ capabilities: { attachmentDeliveryVersion: null } });
+    await host.request(2, "attachments.prompt", {});
+    expect(host.last()).toMatchObject({ ok: false, error: { code: "not_implemented" } });
+  });
+
+  it("advertises the attachment protocol version it was configured with", async () => {
+    const host = harness({
+      info: {
+        sessionId: "session-1",
+        cwd: normalize("C:/work"),
+        bridgePort: 38618,
+        nodeVersion: "v24.21.0",
+        piVersion: "0.85.1",
+        startedAt: 1_700_000_000_000,
+        capabilities: { checkpointsExtension: true, attachmentDeliveryVersion: 1 },
+      },
+    });
+    await host.request(1, "host.hello");
+    expect(host.lastResult()).toMatchObject({
+      capabilities: { checkpointsExtension: true, attachmentDeliveryVersion: 1 },
+    });
+  });
+
   it("reports a null build id when the supervisor did not stamp one", async () => {
     const host = harness({
       info: {

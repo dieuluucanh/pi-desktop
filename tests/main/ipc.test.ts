@@ -48,28 +48,32 @@ interface Recording {
   officeCalls: { kind: string; tabId?: string; takeover?: boolean }[];
   workspaceCalls: { kind: string; input?: unknown }[];
   sessionCalls: { kind: string; arg?: unknown }[];
+  sessionRequestCalls: { tabId: string; method: string; params?: unknown }[];
+  attachmentCalls: { kind: string; senderId: number; arg?: unknown }[];
   tuiFocusCalls: { windowId: number; tabId: string | null }[];
 }
 
 const OPEN_PROJECT = "/work/app";
 
+let liveTabIds: string[] = ["t1"];
+let retiredTabIds = new Set<string>();
+let closeOperations = new Map<string, Promise<SessionTabsEnvelope>>();
+let heldClose: Promise<void> | null = null;
+let releaseHeldClose: (() => void) | null = null;
+
 function envelope(): SessionTabsEnvelope {
-  return {
-    tabs: [
-      {
-        id: "t1",
-        kind: "session",
-        cwd: OPEN_PROJECT,
-        title: "app",
-        sessionFile: null,
-        status: "idle",
-        createdAt: 0,
-        lastActiveAt: 0,
-        model: null,
-      },
-    ],
-    activeTabId: "t1",
-  };
+  const tabs = liveTabIds.map((id) => ({
+    id,
+    kind: "session" as const,
+    cwd: OPEN_PROJECT,
+    title: "app",
+    sessionFile: null,
+    status: "idle" as const,
+    createdAt: 0,
+    lastActiveAt: 0,
+    model: null,
+  }));
+  return { tabs, activeTabId: liveTabIds[0] ?? null };
 }
 
 function projects(): ProjectsSnapshot {
@@ -89,6 +93,7 @@ async function register(recording: Recording): Promise<void> {
     pickDirectory: async () => null,
     pickFile: async () => null,
     shareSession: async () => ({}),
+    exportSanitizedTranscript: async () => ({ ok: false, error: "cancelled" }),
     shareBugReport: async () => ({}),
     openEditor: async () => ({}),
     revealPath: () => true,
@@ -112,13 +117,27 @@ async function register(recording: Recording): Promise<void> {
       },
     },
     sessions: {
-      knownTabIds: () => ["t1"],
+      knownTabIds: () => [...liveTabIds],
+      wasRecentlyClosed: (tabId) => retiredTabIds.has(tabId),
       list: envelope,
       create: async (input) => {
         recording.sessionCalls.push({ kind: "create", arg: input });
         return envelope();
       },
-      close: async () => envelope(),
+      close: (tabId) => {
+        const existing = closeOperations.get(tabId);
+        if (existing) return existing;
+        if (!liveTabIds.includes(tabId)) return Promise.resolve(envelope());
+        recording.sessionCalls.push({ kind: "close", arg: tabId });
+        liveTabIds = liveTabIds.filter((id) => id !== tabId);
+        retiredTabIds.add(tabId);
+        const operation = (async () => {
+          if (heldClose) await heldClose;
+          return envelope();
+        })();
+        closeOperations.set(tabId, operation);
+        return operation;
+      },
       closeAll: async (kind) => {
         recording.sessionCalls.push({ kind: "closeAll", arg: kind });
         return envelope();
@@ -151,8 +170,98 @@ async function register(recording: Recording): Promise<void> {
       restart: async () => envelope(),
       stop: async () => envelope(),
       ensure: async () => envelope(),
-      request: async () => null,
+      request: async (input) => {
+        recording.sessionRequestCalls.push({
+          tabId: input.tabId,
+          method: input.method,
+          params: input.params,
+        });
+        recording.sessionCalls.push({ kind: "request", arg: input });
+        return null;
+      },
       deleteSession: async () => ({ ok: true }) as never,
+    },
+    attachments: {
+      isTrustedSender: (senderId) => senderId === 10,
+      openDraft: async (senderId, tabId, draftId) => {
+        recording.attachmentCalls.push({ kind: "openDraft", senderId, arg: { tabId, draftId } });
+        return { tabId, draftId: "123e4567-e89b-42d3-a456-426614174000", token: "grant" };
+      },
+      closeDraft: async (senderId, draft) => {
+        recording.attachmentCalls.push({ kind: "closeDraft", senderId, arg: draft });
+      },
+      pick: async (senderId, draft) => {
+        recording.attachmentCalls.push({ kind: "pick", senderId, arg: draft });
+        return null;
+      },
+      begin: async (senderId, input) => {
+        recording.attachmentCalls.push({ kind: "begin", senderId, arg: input });
+        return { attachmentId: "attachment", token: "grant" };
+      },
+      append: async () => 0,
+      commit: async () => ({ id: "attachment", name: "a", mimeType: "text/plain", size: 0 }),
+      cancel: async () => {},
+      list: async () => [],
+      preview: async () => ({
+        bytes: new Uint8Array(),
+        size: 0,
+        truncated: false,
+        kind: "text",
+        mimeType: "text/plain",
+      }),
+      remove: async () => {},
+      deliver: async (senderId, input) => {
+        recording.attachmentCalls.push({ kind: "deliver", senderId, arg: input });
+        return {
+          outcome: "blocked",
+          reasons: ["busy"],
+          turnId: input.turnId,
+          attemptId: input.attemptId,
+        };
+      },
+      status: async (senderId, input) => {
+        recording.attachmentCalls.push({ kind: "status", senderId, arg: input });
+        return {
+          version: 1,
+          phase: "none",
+          turnId: null,
+          attemptId: null,
+          result: null,
+          retryOfAttemptId: null,
+          textMatches: false,
+          filesMatch: false,
+          originalIds: [],
+          representationIds: [],
+          updatedAt: null,
+        };
+      },
+      readiness: async (senderId, draft, attachmentIds, text) => {
+        recording.attachmentCalls.push({
+          kind: "status",
+          senderId,
+          arg: { draft, attachmentIds, text },
+        });
+        return {
+          version: 1,
+          outcome: "blocked",
+          files: [],
+          reasons: ["unavailable"],
+          estimatedTokens: 0,
+          model: null,
+          revision: "unavailable",
+        };
+      },
+      storage: async () => null,
+      clearStorage: async () => ({
+        clearedAt: 0,
+        paused: null,
+        assetsRemoved: 0,
+        staleStagingRemoved: 0,
+        bytesFreed: 0,
+        errors: 0,
+      }),
+      exportBundle: async () => ({ ok: false, error: "cancelled" }),
+      importBundle: async () => ({ ok: false, error: "cancelled" }),
     },
     projects: {
       get: async () => projects(),
@@ -229,6 +338,20 @@ async function register(recording: Recording): Promise<void> {
       },
       headMessage: async () => null,
       branches: async () => [],
+      commitContext: async (projectPath) => {
+        recording.gitCalls.push({ kind: "commit-context", arg: projectPath });
+        return {
+          projectPath,
+          branch: null,
+          stat: "",
+          patch: "",
+          truncated: false,
+          files: 0,
+          insertions: 0,
+          deletions: 0,
+          recentSubjects: [],
+        };
+      },
     },
     checkpoints: {
       resolveProjectPath: async (value) => requireProjectPath(knownProjects, value),
@@ -366,9 +489,161 @@ beforeEach(async () => {
     officeCalls: [],
     workspaceCalls: [],
     sessionCalls: [],
+    sessionRequestCalls: [],
+    attachmentCalls: [],
     tuiFocusCalls: [],
   };
+  liveTabIds = ["t1"];
+  retiredTabIds = new Set();
+  closeOperations = new Map();
+  heldClose = null;
+  releaseHeldClose = null;
   await register(recording);
+});
+
+describe("attachment IPC trust boundary", () => {
+  it("accepts only the trusted main frame and a live tab", async () => {
+    const handler = handlers.get(IPC.attachmentsOpenDraft)!;
+    const frame = {};
+    const event = { sender: { id: 10, mainFrame: frame }, senderFrame: frame };
+    const draftId = "123e4567-e89b-42d3-a456-426614174001";
+    await expect(handler(event, "t1", draftId)).resolves.toEqual({
+      tabId: "t1",
+      draftId: "123e4567-e89b-42d3-a456-426614174000",
+      token: "grant",
+    });
+    expect(recording.attachmentCalls).toEqual([
+      { kind: "openDraft", senderId: 10, arg: { tabId: "t1", draftId } },
+    ]);
+    expect(() => handler(event, "control")).toThrow(/control host/);
+    expect(() => handler(event, "missing")).toThrow(/unknown tab/);
+    expect(() =>
+      handler({ sender: { id: 11, mainFrame: frame }, senderFrame: frame }, "t1"),
+    ).toThrow(/untrusted renderer/);
+    expect(() => handler({ sender: { id: 10, mainFrame: frame }, senderFrame: {} }, "t1")).toThrow(
+      /untrusted renderer/,
+    );
+    expect(() => handler({}, "t1")).toThrow(/untrusted renderer/);
+    expect(recording.attachmentCalls).toHaveLength(1);
+  });
+
+  it("closes only an authenticated attachment draft through its dedicated route", async () => {
+    const handler = handlers.get(IPC.attachmentsCloseDraft)!;
+    const frame = {};
+    const event = { sender: { id: 10, mainFrame: frame }, senderFrame: frame };
+    const draft = {
+      tabId: "t1",
+      draftId: "123e4567-e89b-42d3-a456-426614174000",
+      token: "123e4567-e89b-42d3-a456-426614174001",
+    };
+    await expect(handler(event, draft)).resolves.toBeUndefined();
+    expect(recording.attachmentCalls).toEqual([{ kind: "closeDraft", senderId: 10, arg: draft }]);
+    expect(() => handler({}, draft)).toThrow(/untrusted renderer/);
+  });
+
+  it("routes only validated attachment intent through the trusted private delivery channel", async () => {
+    const frame = {};
+    const event = { sender: { id: 10, mainFrame: frame }, senderFrame: frame };
+    const input = {
+      draft: {
+        tabId: "t1",
+        draftId: "123e4567-e89b-42d3-a456-426614174000",
+        token: "123e4567-e89b-42d3-a456-426614174001",
+      },
+      attachmentIds: ["123e4567-e89b-42d3-a456-426614174004"],
+      turnId: "123e4567-e89b-42d3-a456-426614174000",
+      attemptId: "123e4567-e89b-42d3-a456-426614174005",
+      explicitRetry: false,
+      text: "please inspect",
+    };
+    await expect(handlers.get(IPC.attachmentsSubmit)!(event, input)).resolves.toMatchObject({
+      outcome: "blocked",
+      reasons: ["busy"],
+    });
+    expect(recording.attachmentCalls).toEqual([
+      {
+        kind: "deliver",
+        senderId: 10,
+        arg: input,
+      },
+    ]);
+    expect(() =>
+      handlers.get(IPC.attachmentsSubmit)!(event, { ...input, path: "C:/secret" }),
+    ).toThrow(/invalid delivery request/);
+    expect(() => handlers.get(IPC.attachmentsSubmit)!(event, { ...input, text: "\ud800" })).toThrow(
+      /invalid delivery request/,
+    );
+    expect(() => handlers.get(IPC.attachmentsSubmit)!({}, input)).toThrow(/untrusted renderer/);
+    expect(recording.attachmentCalls).toHaveLength(1);
+  });
+
+  it("forwards a validated attachment status request without reading file content", async () => {
+    const frame = { url: "file:///app/index.html" };
+    const event = { sender: { id: 10, mainFrame: frame }, senderFrame: frame };
+    const input = {
+      draft: {
+        tabId: "t1",
+        draftId: "123e4567-e89b-42d3-a456-426614174000",
+        token: "123e4567-e89b-42d3-a456-426614174001",
+      },
+      text: "please inspect",
+      attachmentIds: ["123e4567-e89b-42d3-a456-426614174004"],
+    };
+    await expect(handlers.get(IPC.attachmentsStatus)!(event, input)).resolves.toMatchObject({
+      phase: "none",
+    });
+    expect(recording.attachmentCalls).toContainEqual({ kind: "status", senderId: 10, arg: input });
+    expect(() =>
+      handlers.get(IPC.attachmentsStatus)!(event, { ...input, path: "C:/secret" }),
+    ).toThrow(/invalid status request/);
+    expect(() => handlers.get(IPC.attachmentsStatus)!({}, input)).toThrow(/untrusted renderer/);
+  });
+
+  it("does not allow private transfer operations through the generic session request", () => {
+    for (const method of [
+      "attachments.transfer.begin",
+      "attachments.transfer.chunk",
+      "attachments.transfer.seal",
+      "attachments.transfer.cancel",
+    ]) {
+      expect(() => invoke(IPC.sessionRequest, { tabId: "t1", method, params: {} })).toThrow(
+        /authorized route/,
+      );
+    }
+    expect(recording.sessionCalls).toEqual([]);
+  });
+
+  it("does not allow attachment delivery through the generic session request", async () => {
+    expect(() =>
+      invoke(IPC.sessionRequest, {
+        tabId: "t1",
+        method: "attachments.prompt",
+        params: { version: 1, planId: "forged", turnId: "forged", text: "hello" },
+      }),
+    ).toThrow(/authorized route/);
+    expect(recording.sessionCalls).toEqual([]);
+    const ordinary = { tabId: "t1", method: "prompt", params: { message: "hello" } };
+    await invoke(IPC.sessionRequest, ordinary);
+    expect(recording.sessionCalls).toEqual([{ kind: "request", arg: ordinary }]);
+  });
+
+  it("rejects an untrusted frame on every attachment channel", () => {
+    for (const key of [
+      IPC.attachmentsOpenDraft,
+      IPC.attachmentsPick,
+      IPC.attachmentsBegin,
+      IPC.attachmentsAppend,
+      IPC.attachmentsCommit,
+      IPC.attachmentsCancel,
+      IPC.attachmentsList,
+      IPC.attachmentsPreview,
+      IPC.attachmentsRemove,
+      IPC.attachmentsSubmit,
+    ]) {
+      expect(() => handlers.get(key)!({}, "t1")).toThrow(/untrusted renderer/);
+    }
+    expect(recording.attachmentCalls).toEqual([]);
+  });
 });
 
 describe("office bridge control channels", () => {
@@ -431,6 +706,17 @@ describe("the project-folder allowlist", () => {
     await expect(invoke(IPC.gitSnapshot, { path: OPEN_PROJECT })).rejects.toThrow(
       /project folder is required/,
     );
+  });
+
+  it("resolves the folder before reading the commit context", async () => {
+    const context = await invoke(IPC.gitCommitContext, OPEN_PROJECT);
+    expect(context).toMatchObject({ projectPath: OPEN_PROJECT });
+    expect(recording.gitCalls).toEqual([{ kind: "commit-context", arg: OPEN_PROJECT }]);
+  });
+
+  it("refuses an unknown folder for the commit context", async () => {
+    await expect(invoke(IPC.gitCommitContext, "/etc")).rejects.toThrow(/not an open project/);
+    expect(recording.gitCalls).toEqual([]);
   });
 
   it("applies the same rule to the checkpoint channels", async () => {
@@ -538,6 +824,104 @@ describe("checkpoint action validation", () => {
     const action = recording.checkpointCalls[0]?.arg as CheckpointAction;
     expect(action.kind).toBe("create");
     expect((action as { label?: string }).label?.length).toBe(300);
+  });
+});
+
+describe("session close/request race channels", () => {
+  it("coalesces deferred duplicate closes and settles late closes after retirement", async () => {
+    heldClose = new Promise<void>((resolve) => {
+      releaseHeldClose = resolve;
+    });
+    const first = invoke(IPC.sessionClose, "t1") as Promise<SessionTabsEnvelope>;
+    expect(liveTabIds).toEqual([]);
+    const concurrent = invoke(IPC.sessionClose, "t1") as Promise<SessionTabsEnvelope>;
+    const late = invoke(IPC.sessionClose, "t1") as Promise<SessionTabsEnvelope>;
+    expect(invoke(IPC.sessionRequest, { tabId: "t1", method: "messages.get" })).toEqual({
+      cancelled: { reason: "tab-closed", tabId: "t1" },
+    });
+    expect(recording.sessionRequestCalls).toEqual([]);
+    expect(recording.sessionCalls).toEqual([{ kind: "close", arg: "t1" }]);
+    releaseHeldClose?.();
+    await expect(Promise.all([first, concurrent, late])).resolves.toEqual([
+      { tabs: [], activeTabId: null },
+      { tabs: [], activeTabId: null },
+      { tabs: [], activeTabId: null },
+    ]);
+    await expect(invoke(IPC.sessionClose, "t1")).resolves.toEqual({
+      tabs: [],
+      activeTabId: null,
+    });
+    expect(recording.sessionCalls).toHaveLength(1);
+  });
+
+  it("returns cancellation only for a validated passive request to a retired id", async () => {
+    liveTabIds = [];
+    retiredTabIds.add("t1");
+    expect(invoke(IPC.sessionRequest, { tabId: "t1", method: "messages.get" })).toEqual({
+      cancelled: { reason: "tab-closed", tabId: "t1" },
+    });
+    expect(recording.sessionRequestCalls).toEqual([]);
+
+    await expect(
+      Promise.resolve().then(() =>
+        invoke(IPC.sessionRequest, { tabId: "made-up", method: "messages.get" }),
+      ),
+    ).rejects.toThrow(/unknown tab/);
+    await expect(
+      Promise.resolve().then(() =>
+        invoke(IPC.sessionRequest, { tabId: "t1", method: "not.a.method" }),
+      ),
+    ).rejects.toThrow(/unsupported host method/);
+    await expect(
+      Promise.resolve().then(() =>
+        invoke(IPC.sessionRequest, { tabId: "t1", method: "session.create" }),
+      ),
+    ).rejects.toThrow(/unknown tab/);
+    for (const method of [
+      "prompt",
+      "contributions.run",
+      "composer.transform",
+      "composer.cancel",
+      "composer.applied",
+    ]) {
+      await expect(
+        Promise.resolve().then(() => invoke(IPC.sessionRequest, { tabId: "t1", method })),
+      ).rejects.toThrow(/unknown tab/);
+    }
+    expect(() => invoke(IPC.sessionActivate, "t1")).toThrow(/unknown tab/);
+    expect(() => invoke(IPC.sessionEnsure, "t1")).toThrow(/unknown tab/);
+    expect(recording.sessionRequestCalls).toEqual([]);
+  });
+
+  it("rejects malformed/control addresses and preserves live/control requests", async () => {
+    for (const value of [null, 0, "", undefined]) {
+      expect(() => invoke(IPC.sessionClose, value)).toThrow(/tab id/);
+      expect(() => invoke(IPC.sessionRequest, { tabId: value, method: "messages.get" })).toThrow(
+        /tab id/,
+      );
+    }
+    expect(() => invoke(IPC.sessionClose, "control")).toThrow(/control host/);
+    expect(() => invoke(IPC.sessionRequest, { tabId: "control", method: "unsupported" })).toThrow(
+      /unsupported host method/,
+    );
+    await expect(
+      invoke(IPC.sessionRequest, { tabId: "t1", method: "messages.get", params: { limit: 3 } }),
+    ).resolves.toBeNull();
+    await expect(
+      invoke(IPC.sessionRequest, { tabId: "control", method: "settings.get" }),
+    ).resolves.toBeNull();
+    expect(recording.sessionRequestCalls).toEqual([
+      { tabId: "t1", method: "messages.get", params: { limit: 3 } },
+      { tabId: "control", method: "settings.get", params: undefined },
+    ]);
+  });
+
+  it("forwards a valid absent close to the service without weakening live-target operations", async () => {
+    liveTabIds = [];
+    await expect(invoke(IPC.sessionClose, "t1")).resolves.toEqual({ tabs: [], activeTabId: null });
+    expect(() => invoke(IPC.sessionActivate, "t1")).toThrow(/unknown tab/);
+    expect(() => invoke(IPC.sessionEnsure, "t1")).toThrow(/unknown tab/);
+    expect(recording.sessionCalls).toEqual([]);
   });
 });
 

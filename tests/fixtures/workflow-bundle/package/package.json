@@ -1,0 +1,38 @@
+{
+  "name": "@dieulc/workflow",
+  "version": "0.13.0",
+  "type": "module",
+  "private": false,
+  "description": "Fixture bundle for the Workflow staging and verification tests.",
+  "license": "MIT",
+  "scripts": {
+    "test": "node --test",
+    "postinstall": "node -e \"process.exit(1)\"",
+    "prepublishOnly": "node -e \"process.exit(1)\""
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-agent-core": "*",
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "files": [
+    "index.ts",
+    "helper.ts",
+    "dynamic.ts",
+    "assets/policy.json",
+    "README.md",
+    "LICENSE"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dieuluucanh/pi-workflow.git",
+    "directory": "agent/extensions/workflow"
+  }
+}

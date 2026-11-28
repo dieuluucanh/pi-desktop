@@ -1,7 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createGitPushService, DEFAULT_GIT_POLL_MS } from "../../src/main/git-service";
 import type { GitService } from "../../src/git/service";
-import { emptyGitSnapshot, type GitDiff, type GitSnapshot } from "../../src/shared/git";
+import {
+  emptyGitSnapshot,
+  type GitCommitContext,
+  type GitDiff,
+  type GitSnapshot,
+} from "../../src/shared/git";
 
 /**
  * The source-control push service (git-checkpoint plan step 8).
@@ -63,6 +68,19 @@ function fakeEngine() {
     },
     async branches() {
       return { local: [], current: null };
+    },
+    async commitContext(projectPath): Promise<GitCommitContext> {
+      return {
+        projectPath,
+        branch: null,
+        stat: "",
+        patch: "",
+        truncated: false,
+        files: 0,
+        insertions: 0,
+        deletions: 0,
+        recentSubjects: [],
+      };
     },
     clearCache() {
       // no cache in the fake

@@ -30,6 +30,7 @@ import { SessionInfoDialog } from "./sessions/SessionInfoDialog";
 import { ImportSessionDialog } from "./sessions/ImportSessionDialog";
 import { ChangelogDialog } from "./sessions/ChangelogDialog";
 import { ShareDialog } from "./sessions/ShareDialog";
+import { ExportConfirmDialog } from "./sessions/ExportConfirmDialog";
 import { ExpandedEditorDialog } from "./sessions/ExpandedEditorDialog";
 import { ConnectionsView } from "./views/ConnectionsView";
 import { DiagnosticsView } from "./views/DiagnosticsView";
@@ -389,6 +390,7 @@ export function App() {
       <ImportSessionDialog />
       <ChangelogDialog />
       <ShareDialog />
+      <ExportConfirmDialog />
       <ExpandedEditorDialog />
       <ForkDialog />
       <ProviderLoginDialog />

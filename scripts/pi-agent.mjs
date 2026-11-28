@@ -150,10 +150,17 @@ function runWithRetries(run, attempts = 3) {
   throw lastError;
 }
 
+export function npmInvocation(platform = process.platform, env = process.env) {
+  if (platform === "win32") {
+    return { cmd: env.ComSpec ?? "cmd.exe", args: ["/d", "/s", "/c", "npm"] };
+  }
+  return { cmd: "npm", args: [] };
+}
+
 function npmView(args, root) {
-  const npm = process.platform === "win32" ? "npm.cmd" : "npm";
+  const npm = npmInvocation();
   return runWithRetries(() =>
-    execFileSync(npm, args, {
+    execFileSync(npm.cmd, [...npm.args, ...args], {
       cwd: root,
       encoding: "utf8",
       timeout: 120_000,
@@ -411,8 +418,8 @@ function runUpdate(options) {
   writeFileSync(docPath, nextDoc, "utf8");
 
   if (options.install) {
-    const npm = process.platform === "win32" ? "npm.cmd" : "npm";
-    execFileSync(npm, ["install", "--package-lock-only", "--ignore-scripts"], {
+    const npm = npmInvocation();
+    execFileSync(npm.cmd, [...npm.args, "install", "--package-lock-only", "--ignore-scripts"], {
       cwd: options.root,
       stdio: ["ignore", "inherit", "inherit"],
       windowsHide: true,

@@ -8,10 +8,15 @@
  *   node scripts/gen-shims.mjs --mode packaged --runtime-dir <resources>/runtime
  *
  * Layout assumed (matches src/main/runtime/layout.ts):
- *   <runtime>/bin/pi            -> <runtime>/node/<platform>-<arch>/{bin/,}node + out/host/index.mjs
+ *   <runtime>/bin/pi            -> <runtime>/node/<platform>-<arch>/{bin/,}node + the SDK's real CLI
  *   <runtime>/bin/npm           -> ... + node_modules/npm/bin/npm-cli.js
  *
- * Every shim honours `PI_DESKTOP_NODE` and `PI_DESKTOP_HOST_ENTRY`, so the app's
+ * The `pi` shim points at `@earendil-works/pi-coding-agent/dist/bundle/cli.js`,
+ * never at `out/host/index.mjs`: that entry point speaks the app's JSONL service
+ * protocol, so a child spawned as `pi --mode json -p` would be a second host
+ * rather than a Pi session (Workflow plan step 30).
+ *
+ * Every shim honours `PI_DESKTOP_NODE` and `PI_DESKTOP_PI_CLI`, so the app's
  * supervisor can point a host at an exact runtime without touching the files.
  */
 
@@ -83,7 +88,7 @@ esac`;
 /**
  * @returns {{ name: string, content: string }[]} shim files to write
  */
-function buildShims({ target, binDir, entry, mode }) {
+function buildShims({ target, binDir, piCli, mode }) {
   const nodeFromBin = posix(
     relative(binDir, join(binDir, "..", "node", target, nodeRelative(target))),
   );
@@ -93,9 +98,9 @@ function buildShims({ target, binDir, entry, mode }) {
   const npxCli = posix(
     relative(binDir, join(binDir, "..", "node", target, npxCliRelative(target))),
   );
-  const entryFromBin = posix(relative(binDir, entry));
+  const piCliFromBin = posix(relative(binDir, piCli));
   const nodeWin = nodeFromBin.split("/").join("\\");
-  const entryWin = entryFromBin.split("/").join("\\");
+  const piCliWin = piCliFromBin.split("/").join("\\");
   const npmWin = npmCli.split("/").join("\\");
   const npxWin = npxCli.split("/").join("\\");
 
@@ -126,12 +131,12 @@ if not defined PI_DESKTOP_NODE if not exist "%NODE%" (
 ${script}
 `;
 
-  const piUnix = unixBody(`ENTRY="\${PI_DESKTOP_HOST_ENTRY:-$DIR/${entryFromBin}}"
+  const piUnix = unixBody(`ENTRY="\${PI_DESKTOP_PI_CLI:-$DIR/${piCliFromBin}}"
 exec "$NODE" "$ENTRY" "$@"`);
   const piWindows = windowsBody(
     "pi.cmd",
-    `set "ENTRY=%DIR%${entryWin}"
-if defined PI_DESKTOP_HOST_ENTRY set "ENTRY=%PI_DESKTOP_HOST_ENTRY%"
+    `set "ENTRY=%DIR%${piCliWin}"
+if defined PI_DESKTOP_PI_CLI set "ENTRY=%PI_DESKTOP_PI_CLI%"
 "%NODE%" "%ENTRY%" %*
 exit /b %ERRORLEVEL%`,
   );
@@ -190,20 +195,31 @@ async function main() {
   const runtimeDir = resolve(values["runtime-dir"] ?? join(repoRoot, "resources", "runtime"));
   const binDir = resolve(values.out ?? join(runtimeDir, "bin"));
 
-  // In a packaged build the host entry lives next to the asar inside resources:
-  //   <resources>/runtime/bin  ->  <resources>/app.asar.unpacked/out/host/index.mjs
-  const entry =
+  // In a packaged build the SDK lives beside the asar inside resources:
+  //   <resources>/runtime/bin  ->  <resources>/app.asar.unpacked/node_modules/…/cli.js
+  const piCli =
     values.mode === "packaged"
       ? join(
           resolve(values["app-root"] ?? dirname(runtimeDir)),
           "app.asar.unpacked",
-          "out",
-          "host",
-          "index.mjs",
+          "node_modules",
+          "@earendil-works",
+          "pi-coding-agent",
+          "dist",
+          "bundle",
+          "cli.js",
         )
-      : join(repoRoot, "out", "host", "index.mjs");
+      : join(
+          repoRoot,
+          "node_modules",
+          "@earendil-works",
+          "pi-coding-agent",
+          "dist",
+          "bundle",
+          "cli.js",
+        );
 
-  const shims = buildShims({ target, binDir, entry, mode: values.mode });
+  const shims = buildShims({ target, binDir, piCli, mode: values.mode });
   await mkdir(binDir, { recursive: true });
 
   const written = new Set(shims.map((shim) => shim.name));

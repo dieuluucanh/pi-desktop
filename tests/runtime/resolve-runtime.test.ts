@@ -5,6 +5,7 @@ import {
   runtimeEnvOverrides,
   type RuntimeEnvironment,
 } from "../../src/main/runtime/resolve-runtime";
+import { piCliRelativePath } from "../../src/main/runtime/layout";
 
 /** A host-absolute Windows-shaped fixture: `C:\…` on win32, `/…` elsewhere. */
 const abs = (...parts: string[]): string => join(sep === "\\" ? "C:\\" : "/", ...parts);
@@ -41,12 +42,19 @@ function fakeEnv(options: FakeOptions = {}): RuntimeEnvironment {
 const NODE_DIR = join(RESOURCES, "runtime", "node", "win32-x64");
 const NODE = join(NODE_DIR, "node.exe");
 const NPM_CLI = join(NODE_DIR, "node_modules", "npm", "bin", "npm-cli.js");
+/** The SDK's real CLI, resolved from the app root in development. */
+const PI_CLI = join(APP_ROOT, piCliRelativePath());
+/** The same CLI in a packaged app (unpacked node_modules beside the asar). */
+const PACKAGED_PI_CLI = join(RESOURCES, "app.asar.unpacked", piCliRelativePath());
 const NODE_V24 = "v24.21.0\n";
 
 describe("resolveRuntime — bundled runtime", () => {
   it("prefers the bundled runtime and wires npm to the bundled CLI", () => {
     const resolution = resolveRuntime(
-      fakeEnv({ files: [NODE, NPM_CLI], versions: { [normalize(NODE)]: NODE_V24 } }),
+      fakeEnv({
+        files: [NODE, NPM_CLI, PI_CLI],
+        versions: { [normalize(NODE)]: NODE_V24 },
+      }),
     );
 
     expect(resolution.ok).toBe(true);
@@ -60,9 +68,46 @@ describe("resolveRuntime — bundled runtime", () => {
     expect(resolution.binDir).toBe(join(RESOURCES, "runtime", "bin"));
     expect(resolution.nodeBinDir).toBe(NODE_DIR);
     expect(resolution.piHostPath).toBe(join(APP_ROOT, "out", "host", "index.mjs"));
+    expect(resolution.piCliPath).toBe(PI_CLI);
     expect(resolution.terminalHostPath).toBe(join(APP_ROOT, "out", "host", "terminal.mjs"));
     expect(resolution.hint).toBeNull();
     expect(resolution.problems).toEqual([]);
+  });
+
+  it("resolves the packaged Pi CLI from app.asar.unpacked", () => {
+    const resolution = resolveRuntime(
+      fakeEnv({
+        isPackaged: true,
+        files: [NODE, NPM_CLI, PACKAGED_PI_CLI],
+        versions: { [normalize(NODE)]: NODE_V24 },
+      }),
+    );
+
+    expect(resolution.piCliPath).toBe(PACKAGED_PI_CLI);
+    expect(resolution.problems).toEqual([]);
+  });
+
+  it("reports a missing Pi CLI instead of handing out the host entry point", () => {
+    const resolution = resolveRuntime(
+      fakeEnv({ files: [NODE, NPM_CLI], versions: { [normalize(NODE)]: NODE_V24 } }),
+    );
+
+    expect(resolution.ok).toBe(true);
+    expect(resolution.piCliPath).toBeNull();
+    expect(resolution.problems.join(" ")).toContain("no Pi CLI for child agents");
+  });
+
+  it("lets PI_DESKTOP_PI_CLI relocate the child CLI", () => {
+    const custom = abs("tools", "cli.js");
+    const resolution = resolveRuntime(
+      fakeEnv({
+        env: { PI_DESKTOP_PI_CLI: custom },
+        files: [NODE, NPM_CLI],
+        versions: { [normalize(NODE)]: NODE_V24 },
+      }),
+    );
+
+    expect(resolution.piCliPath).toBe(custom);
   });
 
   it("falls back to the npm on PATH when the bundled CLI is missing", () => {
@@ -237,9 +282,12 @@ describe("resolveRuntime — system fallback and failure", () => {
 });
 
 describe("runtimeEnvOverrides", () => {
-  it("puts the shim directory first on PATH and pins node and the host entry", () => {
+  it("puts the shim directory first on PATH and pins node, the host entry and the child CLI", () => {
     const resolution = resolveRuntime(
-      fakeEnv({ files: [NODE, NPM_CLI], versions: { [normalize(NODE)]: NODE_V24 } }),
+      fakeEnv({
+        files: [NODE, NPM_CLI, PI_CLI],
+        versions: { [normalize(NODE)]: NODE_V24 },
+      }),
     );
 
     const overrides = runtimeEnvOverrides(resolution, {
@@ -250,7 +298,15 @@ describe("runtimeEnvOverrides", () => {
     expect(overrides.PI_DESKTOP_NODE).toBe(NODE);
     expect(overrides.PI_DESKTOP_HOST_ENTRY).toBe(resolution.piHostPath);
     expect(overrides.PI_DESKTOP_TERMINAL_ENTRY).toBe(resolution.terminalHostPath);
+    expect(overrides.PI_DESKTOP_PI_CLI).toBe(PI_CLI);
     expect(overrides.PATH).toBe(`${resolution.binDir};${NODE_DIR};C:\\Windows\\System32`);
+  });
+
+  it("omits PI_DESKTOP_PI_CLI when no CLI resolved", () => {
+    const resolution = resolveRuntime(fakeEnv({}));
+    const overrides = runtimeEnvOverrides(resolution, { basePath: "", platform: "linux" });
+
+    expect(overrides.PI_DESKTOP_PI_CLI).toBeUndefined();
   });
 
   it("omits PI_DESKTOP_NODE when no runtime resolved", () => {

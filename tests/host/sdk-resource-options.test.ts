@@ -2,7 +2,8 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { describe, expect, it } from "vitest";
 import { SAFE_MODE_RESOURCE_LOADER_OPTIONS } from "../../src/host/safe-mode";
-import { resolveCheckpointExtensionPath } from "../../src/host/index";
+import { resolveCheckpointExtensionPath, resolveHostWorkflowBuiltin } from "../../src/host/index";
+import { WORKFLOW_BUNDLE_DIR_ENV } from "../../src/shared/host-protocol";
 
 /**
  * Host wiring for the checkpoint extension (git-checkpoint plan step 24).
@@ -61,5 +62,61 @@ describe("the loader-options decision", () => {
     // and the loader helper's safe branch is belt-and-braces. Both must agree.
     expect(SAFE_MODE_RESOURCE_LOADER_OPTIONS.noExtensions).toBe(true);
     expect(SAFE_MODE_RESOURCE_LOADER_OPTIONS).not.toHaveProperty("additionalExtensionPaths");
+  });
+});
+
+describe("resolveHostWorkflowBuiltin (plan step 27)", () => {
+  const staged = join("C:", "app", "resources", "extensions", "workflow");
+  const metadata = JSON.stringify({
+    schema: 1,
+    package: "@dieulc/workflow",
+    version: "0.13.0",
+    entry: "index.ts",
+    license: "MIT",
+    integrity: "sha512-abc=",
+    hostPeers: ["typebox"],
+    files: [{ path: "index.ts", sha256: "a".repeat(64) }],
+  });
+
+  it("reads the directory main passed in the host environment", () => {
+    const resolved = resolveHostWorkflowBuiltin(
+      { [WORKFLOW_BUNDLE_DIR_ENV]: staged },
+      { exists: () => true, readFile: () => metadata },
+    );
+    expect(resolved).toMatchObject({
+      registered: true,
+      version: "0.13.0",
+      source: "bundled",
+      replaceable: true,
+      dir: staged,
+      entryPath: join(staged, "index.ts"),
+    });
+  });
+
+  it("registers nothing when the supervisor passed no directory", () => {
+    const resolved = resolveHostWorkflowBuiltin({}, { exists: () => true });
+    expect(resolved.registered).toBe(false);
+    expect(resolved.disabledBy).toBe("missing-bundle");
+    expect(resolved.version).toBeNull();
+  });
+
+  it("reads no file at all in safe mode, even with a staged directory", () => {
+    const touched: string[] = [];
+    const resolved = resolveHostWorkflowBuiltin(
+      { [WORKFLOW_BUNDLE_DIR_ENV]: staged },
+      {
+        safeMode: true,
+        exists: (target) => {
+          touched.push(target);
+          return true;
+        },
+        readFile: (target) => {
+          touched.push(target);
+          return metadata;
+        },
+      },
+    );
+    expect(resolved).toMatchObject({ registered: false, disabledBy: "safe-mode" });
+    expect(touched).toEqual([]);
   });
 });

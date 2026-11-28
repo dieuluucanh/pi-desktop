@@ -99,10 +99,13 @@ describe("extension UI bridge", () => {
 function portHarness(timeoutMs = 1_000) {
   const emitted: Array<{ event: string; payload?: unknown }> = [];
   let counter = 0;
+  let bindingCounter = 0;
   const port = createExtensionUiPort({
     emit: (event, payload) =>
       emitted.push({ event, ...(payload === undefined ? {} : { payload }) }),
     newId: () => `ui-${++counter}`,
+    // Deterministic bindings so an assertion can name the fencing generation.
+    newBindingId: () => `binding-${++bindingCounter}`,
     timeoutMs,
     now: () => 1000,
   });
@@ -186,10 +189,10 @@ describe("extension UI port state", () => {
     const { port, lastState, emitted } = portHarness();
     port.setEditorText("hello");
     expect(port.getEditorText()).toBe("hello");
-    expect(lastState()?.editor).toEqual({ seq: 1, text: "hello" });
+    expect(lastState()?.editor).toEqual({ seq: 1, text: "hello", binding: "binding-1" });
     port.pasteToEditor(" world");
     expect(port.getEditorText()).toBe("hello world");
-    expect(lastState()?.editor).toEqual({ seq: 2, text: "hello world" });
+    expect(lastState()?.editor).toEqual({ seq: 2, text: "hello world", binding: "binding-1" });
 
     const before = emitted.length;
     expect(port.handlers()["oi.editorText"]!({ text: "typed" }, {} as never)).toEqual({ ok: true });
@@ -241,12 +244,94 @@ describe("extension UI port state", () => {
     expect(port.providerCount()).toBe(0);
     // The renderer owns the draft mirror; a rebind must not erase it.
     expect(port.getEditorText()).toBe("draft");
+    // The pending host edit, however, is superseded by the rebind.
+    expect(port.snapshot().editor).toBeNull();
     expect(states()).toHaveLength(before + 1);
 
     // Idempotent: a second reset pushes the same empty state and changes nothing.
     port.resetSessionUi();
     expect(states()).toHaveLength(before + 2);
     expect(port.getToolsExpanded()).toBe(true);
+  });
+});
+
+describe("composer edit fencing (plan step 17)", () => {
+  it("mints a new binding and restarts the sequence on rebind", () => {
+    const { port, lastState } = portHarness();
+    port.setEditorText("old session");
+    port.setEditorText("old session 2");
+    expect(lastState()?.editor).toMatchObject({ seq: 2, binding: "binding-1" });
+
+    port.resetSessionUi();
+    // The pending edit belongs to the outgoing runner: replaying it into the
+    // replacement session would overwrite a newer draft.
+    expect(lastState()?.editor).toBeNull();
+    // ...but the renderer's draft mirror survives the rebind.
+    expect(port.getEditorText()).toBe("old session 2");
+
+    // A fresh host can legitimately start again at a low sequence.
+    port.setEditorText("new session");
+    expect(lastState()?.editor).toEqual({ seq: 1, text: "new session", binding: "binding-2" });
+  });
+
+  it("keeps unconditional set/paste semantics for unrelated extensions", () => {
+    const { port } = portHarness();
+    port.setEditorText("a");
+    port.setEditorText("a");
+    port.pasteToEditor("b");
+    // No compare-and-swap here: every write goes through, as Pi documents.
+    expect(port.getEditorText()).toBe("ab");
+    expect(port.snapshot().editor).toMatchObject({ seq: 3, text: "ab" });
+  });
+
+  it("drops a pending command the renderer's newer draft has superseded", () => {
+    const { port, lastState } = portHarness();
+    port.setEditorText("extension text");
+    const before = lastState();
+
+    // The user typed over it: the mirror no longer matches the command, so the
+    // next state frame must not replay it.
+    port.handlers()["oi.editorText"]!({ text: "user typed more" }, {} as never);
+    expect(port.getEditorText()).toBe("user typed more");
+    expect(port.snapshot().editor).toBeNull();
+    // The superseded snapshot is not re-pushed: the mirror is not an edit.
+    expect(lastState()).toEqual(before);
+  });
+
+  it("keeps the pending command while the mirror still matches it", () => {
+    const { port } = portHarness();
+    port.setEditorText("same");
+    port.handlers()["oi.editorText"]!({ text: "same" }, {} as never);
+    expect(port.snapshot().editor).toMatchObject({ seq: 1, text: "same" });
+  });
+
+  it("clears a consumed command once and only for the matching binding/seq", () => {
+    const { port } = portHarness();
+    const consume = port.handlers()["oi.editorConsumed"]!;
+    port.setEditorText("one");
+
+    // A stale ack (wrong seq or binding) must not drop a live command.
+    expect(consume({ seq: 0, binding: "binding-1" }, {} as never)).toEqual({
+      ok: true,
+      cleared: false,
+    });
+    expect(consume({ seq: 1, binding: "binding-other" }, {} as never)).toEqual({
+      ok: true,
+      cleared: false,
+    });
+    expect(port.snapshot().editor).not.toBeNull();
+
+    expect(consume({ seq: 1, binding: "binding-1" }, {} as never)).toEqual({
+      ok: true,
+      cleared: true,
+    });
+    // One-shot delivery: a reconnected renderer is never handed it again.
+    expect(port.snapshot().editor).toBeNull();
+    expect(port.getEditorText()).toBe("one");
+    expect(consume({ seq: 1, binding: "binding-1" }, {} as never)).toEqual({
+      ok: true,
+      cleared: false,
+    });
   });
 });
 
@@ -352,5 +437,48 @@ describe("extension UI port autocomplete", () => {
         {} as never,
       ),
     ).resolves.toBeNull();
+  });
+});
+
+describe("dialog retraction on abort (row 28)", () => {
+  it("retracts an already-visible dialog when its signal aborts", async () => {
+    const { port, emitted } = portHarness();
+    const controller = new AbortController();
+    const answer = port.input("Name", "typed", { signal: controller.signal });
+    const request = emitted.find((entry) => entry.event === "oi.request");
+    expect(request).toBeTruthy();
+
+    controller.abort();
+    await expect(answer).resolves.toBeUndefined();
+    const cancel = emitted.find((entry) => entry.event === "oi.cancel");
+    expect(cancel?.payload).toEqual({ id: (request?.payload as { id: string }).id });
+  });
+
+  it("retracts every pending dialog when the session is torn down", () => {
+    const { port, emitted } = portHarness();
+    // The teardown rejects the host promises by design; the test only asserts
+    // the renderer-side retraction, so the rejections are handled here.
+    void port.select("Pick", ["a"]).catch(() => undefined);
+    void port.confirm("Sure?", "Really?").catch(() => undefined);
+    const ids = emitted
+      .filter((entry) => entry.event === "oi.request")
+      .map((entry) => (entry.payload as { id: string }).id);
+    port.dispose("session replaced");
+    const cancelled = emitted
+      .filter((entry) => entry.event === "oi.cancel")
+      .map((entry) => (entry.payload as { id: string }).id);
+    expect(cancelled).toEqual(ids);
+  });
+
+  it("does not emit a cancel for a dialog that already settled", async () => {
+    const { port, emitted, respond } = portHarness();
+    const controller = new AbortController();
+    const answer = port.input("Name", undefined, { signal: controller.signal });
+    const id = (emitted.find((entry) => entry.event === "oi.request")?.payload as { id: string })
+      .id;
+    await respond({ id, value: "done" }, {} as never);
+    await expect(answer).resolves.toBe("done");
+    controller.abort();
+    expect(emitted.some((entry) => entry.event === "oi.cancel")).toBe(false);
   });
 });

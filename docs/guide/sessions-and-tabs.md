@@ -59,6 +59,24 @@ composer's `!`/`!!` stays the "the agent should see this" runner.
 - It is a **local** shell only. There is no SSH/remote session, no tmux control
   mode and no docked split panel; those are backlog.
 
+## Related child sessions
+
+An extension can ask the app to open a **related session**: a normal tab in the
+same project, owned by the session that requested it. The tab is a real session
+with the usual tools, editor, input and transcript — not a hidden background
+worker.
+
+- It starts **idle**. The extension writes its assignment metadata before the
+  session starts, and the child's first turn begins only when the parent hands
+  it an authenticated start grant. A tab you open from a link stays idle.
+- Opening the same related session again **focuses** the existing tab; it never
+  starts a second writer for the same JSONL file.
+- Closing the tab ends that child; the parent sees the close and must reconcile
+  the task rather than silently respawning it.
+- The assignment content is ordinary session metadata. You can inspect it from
+  the transcript/session view; the parent's control secret is never placed in
+  the tab, the prompt or the command line.
+
 ## Working with several sessions at once (grid)
 
 The window can show several tabs side by side. The grid replaces only the content
@@ -175,6 +193,16 @@ Tabs, order and the active tab are stored in app state and restored on launch,
 but **no host is spawned until a tab is activated**. The most recently used tab
 is warmed in the background so the first session is fast.
 
+## Following the transcript
+
+The transcript follows new output as it streams. While the view is on the tail,
+every new message, tool result and streamed delta keeps it there. Scroll up —
+with the wheel, a touch drag or `PageUp`/`Home`/`↑` — and following stops at once,
+leaving you where you are. Scroll back down to the bottom, or press the **Jump to
+latest** pill (`Ctrl+End`), to resume. The pill reads **New messages · jump to
+latest** only when content arrived while you were reading above; if nothing new
+has come in since you scrolled up it stays plain **Jump to latest**.
+
 ## Composer
 
 The composer is a plain text area with Pi’s autocomplete contract:
@@ -184,9 +212,12 @@ The composer is a plain text area with Pi’s autocomplete contract:
   manual resize handle.
 - While the agent is streaming, Enter **steers** the current turn. `Ctrl+Q` /
   `Alt+Enter` queue a **follow-up** instead. Queued messages appear as pending
-  rows above the composer labelled **Steering** / **Follow-up**; `Alt+Up`
-  restores them all into the draft ("restore all"), and a Settings queue-mode
-  change applies to open sessions without a reload.
+  rows above the composer labelled **Steering** / **Follow-up**: the rows list
+  the texts this app queued for you, and `Alt+Up` restores them all into the
+  draft ("restore all"). A turn an extension queued for itself appears as one
+  dim line — like terminal Pi — and is not restored by `Alt+Up` or `Esc`; those
+  actions say when they discard one ("Discarded N queued extension turn(s).").
+  A Settings queue-mode change applies to open sessions without a reload.
 - `!command` runs a shell command in the session folder (streamed into the
   transcript, `Esc` cancels it); `!!command` keeps it out of the model's context.
   The composer shows a **shell** chip and a `! shell` hint. Unlike `/`, `@` and
@@ -194,6 +225,14 @@ The composer is a plain text area with Pi’s autocomplete contract:
   extension that provides `!` autocomplete still works. Commands are
   non-interactive: `git status`, `git add`, `git push -u origin main` work with
   configured credentials, but a password/TUI prompt needs a real terminal.
+- The **mode control** sits in the prompt's top-right corner. It always shows
+  the mode the session is actually in (for example `Plan` or `Orchestrator`),
+  and when the extension supports it, clicking it — or pressing its key, such as
+  `Tab` — advances that extension's mode cycle. Both paths run the same
+  extension-side cycle, so the label cannot disagree with the keyboard; it
+  updates only when the new mode is published, never optimistically. Clicking
+  keeps your draft and caret in the prompt, and the control is reachable with the
+  keyboard. There is no separate row of mode buttons above the composer.
 - A large paste collapses to `[paste #1 +240 lines]`; the body stays in memory
   and is expanded when sent. After a restart the marker says its content is lost
   rather than sending the token.
@@ -244,3 +283,28 @@ The composer is a plain text area with Pi’s autocomplete contract:
 
 - [Projects](projects.md) · [Models and thinking](models-and-thinking.md)
 - [Getting started](getting-started.md) · [FAQ](faq.md)
+
+## Extension-contributed related sessions
+
+An extension can ask the host to create or open a **normal** related session
+(a child or sibling tab) with bounded bootstrap entries. The host:
+
+- resolves the owning extension from the command that made the request, not from
+  an owner string in the payload;
+- checks the negotiated capability (`create`/`open`/`focus`/`inspect`/
+  `interrupt`/`close`) before any work starts, and answers `unsupported` when the
+  host cannot do it;
+- writes bootstrap entries before the session runtime is created — they are
+  data, never an automatic turn;
+- reuses the pending or settled answer for a duplicate request id, so a retry or
+  a lost bus message never opens a second child tab;
+- keeps the archive/transcript when a child is closed.
+
+A related tab is an ordinary session: its own extensions, tools, model and
+transcript. Closing the parent does not kill an unrelated tab, and inspecting a
+running child focuses its owner rather than opening a second writer. When the
+host cannot prove ownership, the request is rejected instead of guessed.
+
+The opt-in Workflow Orchestrator uses this path (`/orchestrator`); it remains
+experimental and live orchestration is not released yet. See the workflow
+repository's `docs/orchestrator-live-acceptance.md` for the unrun live checklist.

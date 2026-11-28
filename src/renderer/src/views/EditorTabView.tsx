@@ -1,6 +1,7 @@
 import { useEffect } from "react";
-import { Save, Wand2 } from "lucide-react";
+import { Save, Wand2, WrapText } from "lucide-react";
 
+import { effectiveWordWrap } from "../../../shared/editor-prefs";
 import { isEditorTab, type TabRecord } from "../../../shared/session-ipc";
 import { getBuffer } from "../editor/buffer-registry";
 import { CodeMirrorEditor } from "../editor/CodeMirrorEditor";
@@ -22,8 +23,17 @@ export function EditorTabView({ tab }: { tab: TabRecord }): React.JSX.Element {
   const save = useEditorStore((state) => state.save);
   const format = useEditorStore((state) => state.format);
   const checkExternal = useEditorStore((state) => state.checkExternalChange);
-  const fontSize = useAppStore((state) => state.prefs.editor.fontSize);
-  const wordWrap = useAppStore((state) => state.prefs.editor.wordWrap);
+  // One selector for the whole block: the derived wrap rule needs the enum and
+  // the prefs together.
+  const editorPrefs = useAppStore((state) => state.prefs.editor);
+  const fontSize = editorPrefs.fontSize;
+  const languageId = meta?.languageId ?? "plaintext";
+  // The wrap flag is resolved from the language + prefs pair. A per-tab
+  // override is session-scoped (never written to prefs) and wins over that
+  // resolution.
+  const wrapOverride = useEditorStore((state) => state.wrapOverride[tab.id]);
+  const setWrapOverride = useEditorStore((state) => state.setWrapOverride);
+  const effectiveWrap = wrapOverride ?? effectiveWordWrap(languageId, editorPrefs);
   // A grid can mount several editors; only the focused pane takes the caret.
   const activeTabId = useAppStore((state) => state.activeTabId);
   const buffer = getBuffer(tab.id);
@@ -59,7 +69,8 @@ export function EditorTabView({ tab }: { tab: TabRecord }): React.JSX.Element {
     if (!shortcut) return;
     event.preventDefault();
     if (shortcut === "save") void save(tab.id);
-    else void format(tab.id);
+    else if (shortcut === "format") void format(tab.id);
+    else setWrapOverride(tab.id, !effectiveWrap);
   };
 
   return (
@@ -86,6 +97,17 @@ export function EditorTabView({ tab }: { tab: TabRecord }): React.JSX.Element {
           {meta ? ` · Ln ${meta.line}, Col ${meta.column}` : ""}
           {meta ? ` · ${meta.eol === "crlf" ? "CRLF" : "LF"}` : ""}
         </span>
+        <Button
+          size="icon-sm"
+          variant="ghost"
+          aria-label="Wrap lines"
+          aria-pressed={effectiveWrap}
+          title="Wrap lines (Alt+Z)"
+          onClick={() => setWrapOverride(tab.id, !effectiveWrap)}
+          data-testid="editor-wrap"
+        >
+          <WrapText className="size-3" aria-hidden />
+        </Button>
         <Button
           size="sm"
           variant="ghost"
@@ -134,14 +156,14 @@ export function EditorTabView({ tab }: { tab: TabRecord }): React.JSX.Element {
       {meta?.loading && !buffer ? (
         <p className="p-4 text-xs text-ink-muted">Loading file…</p>
       ) : buffer ? (
-        <div className="min-h-0 flex-1">
+        <div className="min-h-0 flex-1 bg-canvas">
           <CodeMirrorEditor
             tabId={tab.id}
             doc={buffer.text}
-            languageId={meta?.languageId ?? "plaintext"}
+            languageId={languageId}
             readOnly={!canEdit}
             fontSize={fontSize}
-            wordWrap={wordWrap}
+            wordWrap={effectiveWrap}
             tabSize={2}
             autoFocus={tab.id === activeTabId}
           />
